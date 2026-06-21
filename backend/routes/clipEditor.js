@@ -1,0 +1,330 @@
+import express from "express";
+import multer from "multer";
+import { v4 as uuidv4 } from "uuid";
+import { join, dirname, extname } from "path";
+import { fileURLToPath } from "url";
+import { existsSync, mkdirSync } from "fs";
+import { copyFile, rm } from "fs/promises";
+import { downloadAudio, downloadVideo } from "../services/ytdlp.js";
+import { extractAudio, exportMP3 } from "../services/ffmpeg.js";
+import { separateStems } from "../services/demucs.js";
+import { dereverbVocals } from "../services/dereverb.js";
+import { recomposeReplace, combineStems, stripAudio } from "../services/clipEditor.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const router = express.Router();
+
+const TMP_DIR = join(__dirname, "../tmp");
+const OUT_DIR = join(__dirname, "../data/outputs/clip-editor");
+mkdirSync(TMP_DIR, { recursive: true });
+mkdirSync(OUT_DIR, { recursive: true });
+
+// ── Upload de la nouvelle piste audio (transformée par un outil IA externe :
+// Kits.ai, Suno, Udio, LALAL.AI...) avant remontage avec la vidéo d'origine.
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, TMP_DIR),
+  filename: (req, file, cb) => cb(null, `clipaudio_${uuidv4()}${extname(file.originalname) || ".mp3"}`),
+});
+const upload = multer({ storage, limits: { fileSize: 300 * 1024 * 1024 } });
+
+// ── Jobs en mémoire (même pattern que routes/mashup.js) ──
+const jobs = new Map();
+const updateJob = (id, patch) => jobs.set(id, { ...(jobs.get(id) || {}), ...patch, updatedAt: Date.now() });
+
+router.get("/:id/status", (req, res) => {
+  const job = jobs.get(req.params.id);
+  if (!job) return res.status(404).json({ error: "Job not found" });
+  res.json(job);
+});
+
+// ── Téléchargement forcé de la vidéo SANS son (étape ①/③) ──
+// Servir ce fichier via /outputs (express.static) ne force pas le
+// téléchargement : sans en-tête Content-Disposition, et comme le frontend
+// (port Vite) et le backend sont sur des origines différentes, l'attribut
+// HTML "download" est ignoré par le navigateur, qui ouvre/joue la vidéo au
+// lieu de la télécharger. res.download() fixe Content-Disposition: attachment
+// côté serveur, ce qui force le téléchargement quelle que soit l'origine.
+router.get("/:id/video-silent", (req, res) => {
+  const jobId = req.params.id;
+  const job = jobs.get(jobId);
+  const filePath = join(OUT_DIR, jobId, "video_silent.mp4");
+  if (!existsSync(filePath)) return res.status(404).json({ error: "Vidéo sans son introuvable." });
+  const safeTitle = (job?.title || "clip").replace(/[\\/:*?"<>|]/g, "").trim().slice(0, 60) || "clip";
+  res.download(filePath, `${safeTitle} (sanson).mp4`);
+});
+
+// ── Séparation voix / instru (Demucs) ── factorisée pour être appelée à la
+// fois automatiquement (juste après l'extraction, en tâche de fond masquée)
+// et manuellement via /:id/separate (ex: pour réessayer après une erreur).
+// Jamais "await"ée sur le chemin de /extract : ça ne doit JAMAIS bloquer le
+// passage à "done" de l'audio, qui doit rester rapide.
+const runSeparation = async (jobId) => {
+  const job = jobs.get(jobId);
+  if (!job || job.stemsStatus === "running" || job.stemsStatus === "done") return;
+
+  const jobOut = join(OUT_DIR, jobId);
+  const sourceWav = join(jobOut, "source.wav");
+  if (!existsSync(sourceWav)) {
+    updateJob(jobId, { stemsStatus: "error", stemsError: "Audio source introuvable" });
+    return;
+  }
+
+  updateJob(jobId, { stemsStatus: "running" });
+  const stemsTmp = join(TMP_DIR, `${jobId}-stems`);
+  try {
+    const { vocals, instrumental } = await separateStems(sourceWav, stemsTmp);
+    const vocalsName = "vocals" + extname(vocals);
+    const instruName = "instrumental" + extname(instrumental);
+    const vocalsDest = join(jobOut, vocalsName);
+    await copyFile(vocals, vocalsDest);
+    await copyFile(instrumental, join(jobOut, instruName));
+    updateJob(jobId, {
+      stemsStatus: "done",
+      dereverbStatus: "idle",
+      vocals: `/outputs/clip-editor/${jobId}/${vocalsName}`,
+      instrumental: `/outputs/clip-editor/${jobId}/${instruName}`,
+    });
+    console.log(`✅ [clip-editor] séparation ${jobId} terminée`);
+
+    // Nettoyage écho/réverb de la voix, en tâche de fond (masqué, non
+    // bloquant) : la voix brute reste utilisable/téléchargeable tout de
+    // suite, et est automatiquement remplacée par la version "sèche" dès
+    // qu'elle est prête. Optionnel — si le package IA n'est pas installé,
+    // on retombe simplement sur la voix brute (cf. runDereverb).
+    runDereverb(jobId).catch(() => {});
+  } catch (err) {
+    console.error(`❌ [clip-editor] séparation ${jobId} échouée :`, err.message);
+    updateJob(jobId, { stemsStatus: "error", stemsError: err.message });
+  } finally {
+    await rm(stemsTmp, { recursive: true, force: true }).catch(() => {});
+  }
+};
+
+// ── Suppression d'écho/réverb sur la voix séparée (bonus IA, cf.
+// services/dereverb.js) ── factorisée comme runSeparation : appelée
+// automatiquement après la séparation, et réessayable manuellement via
+// /:id/dereverb. Jamais bloquante : en cas d'échec (package non installé,
+// modèle indisponible...), la voix brute reste la version utilisée partout.
+const runDereverb = async (jobId) => {
+  const job = jobs.get(jobId);
+  if (!job || job.stemsStatus !== "done" || !job.vocals) return;
+  if (job.dereverbStatus === "running" || job.dereverbStatus === "done") return;
+
+  const jobOut = join(OUT_DIR, jobId);
+  const vocalsPath = join(jobOut, job.vocals.split("/").pop());
+  if (!existsSync(vocalsPath)) return;
+
+  updateJob(jobId, { dereverbStatus: "running" });
+  const dereverbTmp = join(TMP_DIR, `${jobId}-dereverb`);
+  try {
+    const cleanPath = await dereverbVocals(vocalsPath, dereverbTmp);
+    const cleanName = "vocals_clean" + extname(cleanPath);
+    await copyFile(cleanPath, join(jobOut, cleanName));
+    updateJob(jobId, {
+      dereverbStatus: "done",
+      vocalsClean: `/outputs/clip-editor/${jobId}/${cleanName}`,
+    });
+    console.log(`✅ [clip-editor] dé-réverb ${jobId} terminé`);
+  } catch (err) {
+    console.warn(`⚠️ [clip-editor] dé-réverb ${jobId} indisponible (repli sur la voix brute) :`, err.message);
+    updateJob(jobId, { dereverbStatus: "error", dereverbError: err.message });
+  } finally {
+    await rm(dereverbTmp, { recursive: true, force: true }).catch(() => {});
+  }
+};
+
+// ── ÉTAPE 1 (rapide) : téléchargement + extraction + export de la piste
+// complète. La séparation voix/instru (Demucs) — de très loin l'étape la plus
+// lente, souvent 1 à plusieurs minutes en CPU — ne bloque plus le passage à
+// "done" : elle démarre automatiquement juste après, en tâche de fond
+// masquée (l'utilisateur n'a plus besoin de cliquer sur quoi que ce soit).
+// La vidéo, elle, n'est nécessaire ni à l'audio ni à Demucs : on la télécharge
+// aussi en tâche de fond, sans bloquer le passage à "done" sur l'audio (même
+// principe que le téléchargement vidéo dans routes/mashup.js).
+router.post("/extract", async (req, res) => {
+  const { videoId, title = "clip" } = req.body;
+  if (!videoId) return res.status(400).json({ error: "videoId requis" });
+
+  const jobId = uuidv4();
+  const jobTmp = join(TMP_DIR, jobId);
+  const jobOut = join(OUT_DIR, jobId);
+  mkdirSync(jobTmp, { recursive: true });
+  mkdirSync(jobOut, { recursive: true });
+
+  res.json({ jobId });
+  updateJob(jobId, { status: "running", step: 0, label: "Téléchargement audio", stemsStatus: "idle" });
+
+  const videoPath = join(jobTmp, "video.mp4");
+  // Démarré tout de suite, en parallèle — on ne l'attend que dans sa propre
+  // tâche ci-dessous, jamais sur le chemin de l'audio.
+  const videoDownloadPromise = downloadVideo(videoId, videoPath);
+
+  const audioTask = (async () => {
+    try {
+      const audioBase = join(jobTmp, "audio_raw");
+      await downloadAudio(videoId, audioBase);
+
+      const exts = [".wav", ".opus", ".webm", ".m4a", ".mp3", ".ogg", ".flac", ".aac"];
+      const rawAudio = exts.map(e => audioBase + e).find(p => existsSync(p));
+      if (!rawAudio) throw new Error("Audio introuvable après téléchargement");
+
+      updateJob(jobId, { step: 1, label: "Extraction audio" });
+      const wav = join(jobTmp, "audio.wav");
+      await extractAudio(rawAudio, wav);
+
+      updateJob(jobId, { step: 2, label: "Export piste complète" });
+      const fullMp3 = join(jobOut, "full.mp3");
+      await exportMP3(wav, fullMp3);
+
+      // Le WAV est conservé dans data/outputs/ (pas dans tmp/, qui sera
+      // nettoyé) pour pouvoir lancer la séparation Demucs plus tard à la
+      // demande, sans re-télécharger ni ré-extraire l'audio.
+      await copyFile(wav, join(jobOut, "source.wav"));
+
+      updateJob(jobId, {
+        status: "done", step: 3, label: "Terminé",
+        title,
+        fullAudio: `/outputs/clip-editor/${jobId}/full.mp3`,
+      });
+      console.log(`✅ [clip-editor] extraction audio ${jobId} terminée`);
+
+      // Séparation auto. masquée : lancée ici sans "await" pour ne jamais
+      // retarder le passage à "done" ci-dessus — elle continue en tâche de
+      // fond pendant que l'utilisateur lit les instructions, télécharge la
+      // piste complète, etc.
+      runSeparation(jobId).catch(() => {});
+    } catch (err) {
+      console.error(`❌ [clip-editor] extraction ${jobId} échouée :`, err.message);
+      updateJob(jobId, { status: "error", message: err.message });
+    }
+  })();
+
+  const videoTask = (async () => {
+    try {
+      await videoDownloadPromise;
+      const videoDest = join(jobOut, "video.mp4");
+      await copyFile(videoPath, videoDest);
+      updateJob(jobId, { video: `/outputs/clip-editor/${jobId}/video.mp4` });
+      console.log(`✅ [clip-editor] vidéo ${jobId} prête`);
+
+      // Version SANS bande son, générée ici en tâche de fond (masquée, aucune
+      // action requise de l'utilisateur) — stream-copy donc quasi instantané.
+      // C'est cette version qui sera utilisée à l'étape ③ pour recomposer le
+      // clip final, afin que l'audio d'origine ne s'y glisse jamais.
+      const silentDest = join(jobOut, "video_silent.mp4");
+      await stripAudio(videoDest, silentDest);
+      updateJob(jobId, { videoSilent: `/outputs/clip-editor/${jobId}/video_silent.mp4` });
+      console.log(`✅ [clip-editor] vidéo sans son ${jobId} prête`);
+    } catch (err) {
+      console.error(`❌ [clip-editor] vidéo ${jobId} échouée :`, err.message);
+      updateJob(jobId, { videoError: err.message });
+    }
+  })();
+
+  // Nettoyage du tmp du job une fois les DEUX tâches terminées (succès ou
+  // échec) — elles partagent le même dossier tmp, donc il ne faut le
+  // supprimer qu'après que plus aucune des deux n'en ait besoin.
+  Promise.allSettled([audioTask, videoTask]).then(() => {
+    rm(jobTmp, { recursive: true, force: true }).catch(() => {});
+  });
+});
+
+// ── Relance manuelle de la séparation ──
+// La séparation se lance déjà automatiquement après l'extraction (cf.
+// runSeparation ci-dessus) ; cette route ne sert plus qu'à réessayer en cas
+// d'erreur, ou si jamais elle n'a pas démarré pour une raison quelconque.
+router.post("/:id/separate", async (req, res) => {
+  const jobId = req.params.id;
+  const job = jobs.get(jobId);
+  if (!job || job.status !== "done")
+    return res.status(400).json({ error: "L'extraction de ce clip n'est pas terminée." });
+  if (job.stemsStatus === "running")
+    return res.status(409).json({ error: "Séparation déjà en cours." });
+
+  res.json({ ok: true });
+  updateJob(jobId, { stemsStatus: "idle" }); // pour repasser le "déjà done" éventuel et permettre un retry propre
+  runSeparation(jobId).catch(() => {});
+});
+
+// ── Relance manuelle du nettoyage écho/réverb de la voix ──
+// Utile par exemple si le package "audio-separator" n'était pas encore
+// installé lors de la 1ère tentative (auto, juste après la séparation).
+router.post("/:id/dereverb", async (req, res) => {
+  const jobId = req.params.id;
+  const job = jobs.get(jobId);
+  if (!job || job.stemsStatus !== "done")
+    return res.status(400).json({ error: "La séparation voix/instru n'est pas terminée." });
+  if (job.dereverbStatus === "running")
+    return res.status(409).json({ error: "Nettoyage déjà en cours." });
+
+  res.json({ ok: true });
+  updateJob(jobId, { dereverbStatus: "idle" });
+  runDereverb(jobId).catch(() => {});
+});
+
+// ── ÉTAPE 3 : recomposition — vidéo SANS bande son (générée en masqué à
+// l'étape ①, cf. video_silent.mp4) + piste audio choisie, directement.
+// "source" indique QUEL fichier de l'étape ② l'utilisateur a transformé :
+//  - "full"         : l'upload est utilisé tel quel comme bande son du clip.
+//  - "vocals"       : l'upload = nouvelle voix → recombinée avec l'INSTRUMENTAL ORIGINAL
+//                      (voice swap : seule la voix change).
+//  - "instrumental" : l'upload = nouvel instrumental → recombiné avec la VOIX ORIGINALE
+//                      (remix de style : seule la musique change, la voix reste).
+router.post("/:id/recompose", upload.single("audio"), async (req, res) => {
+  const jobId = req.params.id;
+  const job = jobs.get(jobId);
+  if (!job || job.status !== "done")
+    return res.status(400).json({ error: "L'extraction de ce clip n'est pas terminée." });
+  if (!req.file)
+    return res.status(400).json({ error: "Fichier audio manquant (la piste transformée par l'IA)." });
+
+  const source = ["vocals", "instrumental"].includes(req.body.source) ? req.body.source : "full";
+  const jobOut = join(OUT_DIR, jobId);
+  const silentVideoPath = join(jobOut, "video_silent.mp4");
+  const newAudioPath = req.file.path;
+
+  if (!existsSync(silentVideoPath)) {
+    await rm(newAudioPath, { force: true }).catch(() => {});
+    return res.status(404).json({ error: "Vidéo (sans son) pas encore prête pour ce job — réessaie dans quelques secondes." });
+  }
+
+  let combinedTmp = null;
+  let audioForRecompose = newAudioPath;
+
+  try {
+    if (source !== "full") {
+      // Pour la recombinaison avec la voix d'origine (remix d'instrumental),
+      // on préfère la voix "nettoyée" (sans écho/réverb) si elle est prête —
+      // sinon repli sur la voix brute.
+      const counterpartUrl = source === "vocals" ? job.instrumental : (job.vocalsClean || job.vocals);
+      if (job.stemsStatus !== "done" || !counterpartUrl) {
+        return res.status(400).json({ error: "La piste d'origine correspondante (voix/instrumental) n'est pas encore disponible." });
+      }
+      const counterpartPath = join(jobOut, counterpartUrl.split("/").pop());
+      if (!existsSync(counterpartPath)) {
+        return res.status(404).json({ error: "Piste d'origine introuvable sur le serveur (a-t-elle expiré ?)." });
+      }
+
+      combinedTmp = join(TMP_DIR, `combined_${jobId}_${Date.now()}.wav`);
+      await combineStems(newAudioPath, counterpartPath, combinedTmp);
+      audioForRecompose = combinedTmp;
+    }
+
+    const finalName = `final_${Date.now()}.mp4`;
+    const finalPath = join(jobOut, finalName);
+
+    await recomposeReplace(silentVideoPath, audioForRecompose, finalPath);
+
+    const url = `/outputs/clip-editor/${jobId}/${finalName}`;
+    updateJob(jobId, { finalUrl: url });
+    res.json({ url, source });
+  } catch (err) {
+    console.error(`❌ [clip-editor] recompose ${jobId} échouée :`, err.message);
+    res.status(500).json({ error: err.message });
+  } finally {
+    rm(newAudioPath, { force: true }).catch(() => {});
+    if (combinedTmp) rm(combinedTmp, { force: true }).catch(() => {});
+  }
+});
+
+export default router;

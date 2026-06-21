@@ -1,0 +1,21 @@
+{
+  "name": "studiomashup-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch-path=server.js --watch-path=routes --watch-path=services --watch-path=db --watch-path=api server.js"
+  },
+  "dependencies": {
+    "cheerio": "^1.2.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "express-session": "^1.19.0",
+    "multer": "^2.2.0",
+    "passport": "^0.7.0",
+    "passport-google-oauth20": "^2.0.0",
+    "sharp": "^0.35.1",
+    "uuid": "^9.0.0"
+  }
+}
