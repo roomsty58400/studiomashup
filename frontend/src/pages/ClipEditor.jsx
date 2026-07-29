@@ -772,9 +772,20 @@ export default function ClipEditor() {
             {showSuno && <PromptSunoModal video={selectedVideo} onClose={() => setShowSuno(false)} />}
 
             {selectedVideo && !jobId && (
-              <button className="primary-btn" style={{ marginTop: 12 }} onClick={startExtract}>
-                ▶ EXTRAIRE LA PISTE AUDIO
-              </button>
+              // Les 2 boutons déclenchent la MÊME extraction (routes/clipEditor.js
+              // "/extract" télécharge déjà l'audio ET la vidéo en parallèle, dans un
+              // seul job) — présentés côte à côte pour que les 2 actions soient
+              // visibles/nommées explicitement, plutôt qu'un seul bouton qui sous-
+              // entend l'extraction vidéo (qui n'apparaissait qu'après coup, une
+              // fois prête, cf. aperçu vidéo un peu plus bas).
+              <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                <button className="primary-btn" style={{ flex: 1 }} onClick={startExtract}>
+                  ▶ EXTRAIRE LA PISTE AUDIO
+                </button>
+                <button className="primary-btn" style={{ flex: 1 }} onClick={startExtract}>
+                  ▶ EXTRAIRE LA VIDÉO
+                </button>
+              </div>
             )}
 
             {job && <ExtractProgress job={job} />}
