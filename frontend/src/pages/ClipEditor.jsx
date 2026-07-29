@@ -4,7 +4,7 @@ import LyricsModal from "../components/LyricsModal.jsx";
 import PromptSunoModal from "../components/PromptSunoModal.jsx";
 import { copyToClipboard } from "../utils/clipboard.js";
 import { prefetchMedia } from "../utils/mediaCache.js";
-import { buildDownloadUrl } from "../utils/download.js";
+import { buildDownloadUrl, triggerDownload } from "../utils/download.js";
 
 const API = "http://localhost:3001";
 
@@ -247,7 +247,17 @@ function ExtractProgress({ job }) {
 // plus dans le workflow réel de l'utilisateur) — ne reste qu'un indicateur
 // "prêt" une fois la piste disponible ; downloadName/url conservés en props
 // pour ne pas casser les appelants, mais ne servent plus qu'en interne.
-function StemCard({ icon, label, hint, pending, pendingLabel, showRetry, onAction }) {
+function StemCard({ icon, label, hint, url, downloadName, pending, pendingLabel, showRetry, onAction }) {
+  // Bug corrigé (30/07) : url/downloadName étaient déjà passés par les 3
+  // appelants (piste complète, voix, instru) mais jamais lus ici — la carte
+  // "✅ Prêt" n'avait aucun gestionnaire de clic, donc AUCUN téléchargement ne
+  // partait jamais, silencieusement (aucune erreur, le bouton avait juste
+  // l'air normal). Cliquer déclenche maintenant le téléchargement forcé
+  // (contourne le souci cross-origin :5173→:3001, cf. utils/download.js).
+  const handleDownload = () => {
+    if (!url) return;
+    triggerDownload(buildDownloadUrl(url, downloadName));
+  };
   return (
     <div style={{ flex: 1, minWidth: 160, background: "var(--surface2)", border: "1px solid var(--border)",
       borderRadius: 10, padding: "12px 14px", display: "flex", flexDirection: "column", height: "100%" }}>
@@ -270,11 +280,12 @@ function StemCard({ icon, label, hint, pending, pendingLabel, showRetry, onActio
           </div>
         )
       ) : (
-        <div style={{ textAlign: "center", padding: "7px 0", borderRadius: 6,
+        <button type="button" onClick={handleDownload} disabled={!url} title={url ? "Télécharger" : undefined}
+          style={{ textAlign: "center", padding: "7px 0", borderRadius: 6, width: "100%",
           background: "rgba(0,234,255,0.06)", border: "1px solid rgba(0,234,255,0.2)",
-          color: "var(--cyan)", fontSize: 12, fontWeight: 700 }}>
-          ✅ Prêt
-        </div>
+          color: "var(--cyan)", fontSize: 12, fontWeight: 700, cursor: url ? "pointer" : "default" }}>
+          ⬇ {url ? "Télécharger" : "Prêt"}
+        </button>
       )}
     </div>
   );
