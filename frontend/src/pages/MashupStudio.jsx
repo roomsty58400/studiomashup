@@ -7,6 +7,7 @@ import CoverGenerator from "../components/CoverGenerator.jsx";
 import DjAssistModal from "../components/DjAssistModal.jsx";
 import MashupProgressBar from "../components/MashupProgressModal.jsx";
 import Footer from "../components/Footer.jsx";
+import { buildDownloadUrl, triggerDownload } from "../utils/download.js";
 
 const API = "http://localhost:3001";
 
@@ -636,15 +637,18 @@ export default function MashupStudio({ pendingPair, onTracksChange } = {}) {
                 <audio src={mashupResult.flacUrl} controls />
               )}
               <div style={{ display: "flex", gap: 8 }}>
-                <a href={mashupResult.flacUrl} download style={{
+                {/* <a download> ignoré en cross-origin (:5173 → :3001) — passe
+                    par la route backend qui force Content-Disposition,
+                    cf. utils/download.js. */}
+                <button type="button" onClick={() => triggerDownload(buildDownloadUrl(mashupResult.flacUrl, mashupResult.title))} style={{
                   padding: "6px 12px", borderRadius: 6, background: "rgba(0,234,255,0.12)",
-                  border: "1px solid rgba(0,234,255,0.35)", color: "var(--cyan)", fontSize: 11, fontWeight: 700, textDecoration: "none",
-                }}>⬇ FLAC</a>
+                  border: "1px solid rgba(0,234,255,0.35)", color: "var(--cyan)", fontSize: 11, fontWeight: 700, cursor: "pointer",
+                }}>⬇ FLAC</button>
                 {mashupResult.mp4Url && (
-                  <a href={mashupResult.mp4Url} download style={{
+                  <button type="button" onClick={() => triggerDownload(buildDownloadUrl(mashupResult.mp4Url, mashupResult.title))} style={{
                     padding: "6px 12px", borderRadius: 6, background: "rgba(255,85,136,0.12)",
-                    border: "1px solid rgba(255,85,136,0.35)", color: "#ff5588", fontSize: 11, fontWeight: 700, textDecoration: "none",
-                  }}>⬇ MP4</a>
+                    border: "1px solid rgba(255,85,136,0.35)", color: "#ff5588", fontSize: 11, fontWeight: 700, cursor: "pointer",
+                  }}>⬇ MP4</button>
                 )}
                 <button onClick={() => { setMashupResult(null); setJobId(null); setShowProgress(false); }} style={{
                   padding: "6px 12px", borderRadius: 6, background: "transparent",

@@ -4,6 +4,7 @@ import LyricsModal from "../components/LyricsModal.jsx";
 import PromptSunoModal from "../components/PromptSunoModal.jsx";
 import { copyToClipboard } from "../utils/clipboard.js";
 import { prefetchMedia } from "../utils/mediaCache.js";
+import { buildDownloadUrl } from "../utils/download.js";
 
 const API = "http://localhost:3001";
 
@@ -584,6 +585,13 @@ export default function ClipEditor() {
       return;
     }
     const safeTitle = (filename || "clip").replace(/[<>]/g, "");
+    // <a download> ignoré en cross-origin (:5173 → :3001, même depuis cette
+    // popup) — le lien pointe vers la route backend qui force
+    // Content-Disposition. Les URLs "/outputs/..." passent par
+    // /api/mashup/download ; les URLs déjà "download-forcées" (ex:
+    // /api/clip-editor/:id/video-silent, qui utilise déjà res.download())
+    // sont laissées telles quelles, cf. utils/download.js.
+    const dlUrl = buildDownloadUrl(src, safeTitle);
     popup.document.write(`<!DOCTYPE html>
 <html><head><title>${safeTitle} — MacheUp Studio</title>
 <meta charset="utf-8">
@@ -598,7 +606,7 @@ export default function ClipEditor() {
 <body>
   <h1>${safeTitle}</h1>
   <video controls autoplay src="${src}"></video>
-  <a class="dl" href="${src}" download="${safeTitle}">⬇ TÉLÉCHARGER LA VIDÉO</a>
+  <a class="dl" href="${dlUrl}">⬇ TÉLÉCHARGER LA VIDÉO</a>
 </body></html>`);
     popup.document.close();
   };

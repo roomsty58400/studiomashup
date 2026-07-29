@@ -5,6 +5,7 @@ import session from "express-session";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { mkdirSync } from "fs";
+import { randomBytes } from "crypto";
 
 import youtubeRoutes from "./routes/youtube.js";
 import mashupRoutes from "./routes/mashup.js";
@@ -36,6 +37,24 @@ import { shutdownAllWorkers } from "./services/workerPool.js";
 if (!process.env.AUDD_API_KEY) {
   console.warn(
     "⚠️  AUDD_API_KEY manquante dans backend/.env — la reconnaissance Shazam tournera sur le quota anonyme d'AudD (très limité, vite épuisé : \"authorization failed: no api_token passed and the limit was reached\"). Clé gratuite sur https://dashboard.audd.io puis ajouter AUDD_API_KEY=... dans .env."
+  );
+}
+
+// ── Secret de session (audit juillet 2026) ────────────────────────────────
+// Utilisé par express-session pour signer le cookie de session (login Google
+// via Passport). Auparavant : repli silencieux sur une valeur codée en dur
+// ("studiomashup-secret-local") si SESSION_SECRET absent de .env — un secret
+// connu de quiconque lit le code n'apporte aucune protection réelle au cookie
+// signé. Génère désormais un secret aléatoire à CHAQUE démarrage du process
+// si SESSION_SECRET n'est pas défini : les sessions ne survivent plus à un
+// redémarrage (re-login Google nécessaire), mais le cookie émis pendant la
+// durée de vie du process est correctement protégé. Pour des sessions qui
+// survivent aux redémarrages, définir SESSION_SECRET=<chaîne aléatoire
+// longue> dans backend/.env (ex: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`).
+const SESSION_SECRET = process.env.SESSION_SECRET || randomBytes(32).toString("hex");
+if (!process.env.SESSION_SECRET) {
+  console.warn(
+    "⚠️  SESSION_SECRET manquante dans backend/.env — secret aléatoire généré pour cette session serveur uniquement (toutes les connexions Google seront invalidées au prochain redémarrage). Pour éviter ça, ajouter SESSION_SECRET=<chaîne aléatoire longue> dans .env."
   );
 }
 
@@ -144,7 +163,7 @@ app.use(express.json());
 
 // Session (requis pour Passport)
 app.use(session({
-  secret: process.env.SESSION_SECRET || "studiomashup-secret-local",
+  secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
   cookie: { secure: false, maxAge: 7 * 24 * 60 * 60 * 1000 }, // 7 jours

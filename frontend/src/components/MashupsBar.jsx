@@ -1,4 +1,5 @@
 import React, { useState, useRef } from "react";
+import { buildDownloadUrl, triggerDownload } from "../utils/download.js";
 
 export default function MashupsBar({ mashups = [], onDelete, onRefresh, onClearAll }) {
   // Petit player partagé : un seul <audio> pour toutes les cartes (au lieu
@@ -110,13 +111,17 @@ export default function MashupsBar({ mashups = [], onDelete, onRefresh, onClearA
               {/* FLAC + MP4 sont générés ensemble — un bouton de téléchargement
                   par format dispo, au lieu d'un seul fichier par carte. */}
               <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                {/* window.open ignore Content-Disposition côté cible cross-
+                    origin (:5173 → :3001) et se contente d'ouvrir/lire le
+                    fichier — triggerDownload passe par la route backend qui
+                    force le téléchargement, cf. utils/download.js. */}
                 <button className="dl-btn" title="Télécharger en FLAC"
-                  onClick={() => window.open(m.flacUrl, "_blank")}>
+                  onClick={() => triggerDownload(buildDownloadUrl(m.flacUrl, m.title))}>
                   ⬇ FLAC
                 </button>
                 {m.mp4Url && (
                   <button className="dl-btn" title="Télécharger en MP4"
-                    onClick={() => window.open(m.mp4Url, "_blank")}>
+                    onClick={() => triggerDownload(buildDownloadUrl(m.mp4Url, m.title))}>
                     ⬇ MP4
                   </button>
                 )}

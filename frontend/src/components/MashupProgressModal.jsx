@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { buildDownloadUrl, triggerDownload } from "../utils/download.js";
 
 // Labels courts — affichés sous la roue, pas de place pour des libellés longs
 // dans ce cadre carré (même contrainte qu'avant : ≈270px de large max).
@@ -210,12 +211,14 @@ export default function MashupProgressBar({ jobId, onClose, onDone, onError, ove
           </div>
         )}
         {isDone && resultUrl && (
-          <a href={`http://localhost:3001${resultUrl}`} download
+          // <a download> ignoré en cross-origin (:5173 → :3001) — passe par la
+          // route backend qui force Content-Disposition, cf. utils/download.js.
+          <button type="button" onClick={() => triggerDownload(buildDownloadUrl(resultUrl))}
             style={{ display: "inline-block", marginTop: 6, padding: "4px 10px", borderRadius: 6,
               background: "#00eaff", color: "#000", fontWeight: 800, fontSize: 10.5,
-              textDecoration: "none", letterSpacing: 0.5 }}>
+              border: "none", cursor: "pointer", letterSpacing: 0.5 }}>
             ⬇ FLAC
-          </a>
+          </button>
         )}
         {isError && error && (
           <div style={{ fontSize: 10, color: "#ff6666", marginTop: 4, maxHeight: 40, overflow: "hidden", textOverflow: "ellipsis" }}>

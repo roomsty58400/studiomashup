@@ -53,6 +53,30 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage, limits: { fileSize: 300 * 1024 * 1024 } });
 
+// ── Téléchargement forcé (audit juillet 2026 — Content-Disposition) ────────
+// /outputs est servi en express.static (server.js), SANS Content-Disposition.
+// Les boutons ⬇ du frontend (MashupStudio, MashupsBar, MashupProgressModal...)
+// pointent vers ces URLs avec l'attribut HTML `download` ou via window.open() :
+// les deux sont sans effet en cross-origin (frontend :5173 → backend :3001 =
+// origines différentes pour le navigateur), qui ouvre/joue le fichier au lieu
+// de le télécharger. Route générique réutilisable par tout composant qui
+// détient déjà une URL "/outputs/..." (flacUrl/mp4Url/silentUrl, quel que soit
+// la route qui les a produites — mashup simple, multi, stems...) : réutilise
+// resolveOutputPath (anti-traversée déjà durci, cf. trackPreparation.js) pour
+// ne jamais servir un chemin hors de data/outputs, puis res.download() force
+// Content-Disposition: attachment quelle que soit l'origine de la requête —
+// même pattern déjà en place sur stems.js/clipEditor.js/radio.js.
+router.get("/download", (req, res) => {
+  const { url, name } = req.query;
+  const filePath = resolveOutputPath(url);
+  if (!filePath || !existsSync(filePath)) {
+    return res.status(404).json({ error: "Fichier introuvable." });
+  }
+  const ext = extname(filePath);
+  const safeName = String(name || "mashup").replace(/[\\/:*?"<>|]/g, "").trim().slice(0, 80) || "mashup";
+  res.download(filePath, `${safeName}${ext}`);
+});
+
 // ── Upload d'un fichier audio ──
 router.post("/upload", upload.single("audio"), (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Fichier manquant" });

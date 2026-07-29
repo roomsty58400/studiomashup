@@ -1,6 +1,10 @@
 # ── Dépendances ──
 node_modules/
 
+# ── Caches Python (partout, pas seulement la racine) ──
+__pycache__/
+*.pyc
+
 # ── Secrets / config locale (clés API, identifiants OAuth) ──
 .env
 .env.*

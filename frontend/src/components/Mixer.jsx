@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from "react";
 import MashupProgressBar from "./MashupProgressModal.jsx";
 import { registerPlayer, notifyPlaying } from "../utils/mediaCoordinator.js";
+import { buildDownloadUrl } from "../utils/download.js";
 
 // Icônes des 4 pads DJ (recul/play/pause/stop) en SVG plutôt qu'en emoji
 // texte (⏪▶⏸⏹) : le rendu des emoji varie trop selon l'OS/la police (souvent
@@ -107,6 +108,11 @@ function MashupPlayer({ mashupResult, coverUrl, generatingCover, onOpenCover, on
       return;
     }
     const title = (mashupResult.title || "Mashup").replace(/[<>]/g, "");
+    // <a download> ignoré en cross-origin (:5173 → :3001, même depuis cette
+    // popup) — le lien pointe vers la route backend qui force
+    // Content-Disposition, cf. utils/download.js. <video src> garde l'URL
+    // brute : Content-Disposition n'affecte pas la lecture inline.
+    const dlUrl = buildDownloadUrl(mediaSrc, title);
     popup.document.write(`<!DOCTYPE html>
 <html><head><title>${title} — MacheUp Studio</title>
 <meta charset="utf-8">
@@ -121,7 +127,7 @@ function MashupPlayer({ mashupResult, coverUrl, generatingCover, onOpenCover, on
 <body>
   <h1>${title}</h1>
   <video controls autoplay src="${mediaSrc}"></video>
-  <a class="dl" href="${mediaSrc}" download="${title}.mp4">⬇ TÉLÉCHARGER LA VIDÉO</a>
+  <a class="dl" href="${dlUrl}">⬇ TÉLÉCHARGER LA VIDÉO</a>
 </body></html>`);
     popup.document.close();
   };
