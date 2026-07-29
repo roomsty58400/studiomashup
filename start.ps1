@@ -17,7 +17,7 @@ chcp 65001 | Out-Null
 # enregistré dans ces fichiers — pour relire un message (rouge = erreur) qui
 # a défilé trop vite à l'écran, ouvre simplement le fichier .log correspondant
 # dans le Bloc-notes, tranquillement, sans course contre le défilement.
-$logsDir = "$root\logs"
+$logsDir = "$root\diagnostic\logs"
 New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
 $backendLog = "$logsDir\backend.log"
 $frontendLog = "$logsDir\frontend.log"

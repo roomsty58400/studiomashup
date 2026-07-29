@@ -4,7 +4,7 @@ import { v4 as uuidv4 } from "uuid";
 import { join, dirname, extname } from "path";
 import { fileURLToPath } from "url";
 import { existsSync, mkdirSync } from "fs";
-import { copyFile, rm } from "fs/promises";
+import { rename, rm } from "fs/promises";
 import { downloadAudio, downloadVideo } from "../services/ytdlp.js";
 import { extractAudio, exportMP3 } from "../services/ffmpeg.js";
 import { separateStems } from "../services/demucs.js";
@@ -21,9 +21,18 @@ mkdirSync(OUT_DIR, { recursive: true });
 
 // ── Upload de la nouvelle piste audio (transformée par un outil IA externe :
 // Kits.ai, Suno, Udio, LALAL.AI...) avant remontage avec la vidéo d'origine.
+// Extension whitelistée (audit juillet 2026, même raisonnement que
+// routes/mashup.js) : ce fichier est ensuite passé à des commandes ffmpeg
+// interpolées en chaîne shell (services/clipEditor.js) — mieux vaut ne
+// jamais faire confiance à l'extension brute fournie par le client.
+const ALLOWED_AUDIO_EXT = new Set([".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac", ".opus", ".webm"]);
+const safeAudioExt = (originalName) => {
+  const ext = extname(originalName || "").toLowerCase();
+  return ALLOWED_AUDIO_EXT.has(ext) ? ext : ".mp3";
+};
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, TMP_DIR),
-  filename: (req, file, cb) => cb(null, `clipaudio_${uuidv4()}${extname(file.originalname) || ".mp3"}`),
+  filename: (req, file, cb) => cb(null, `clipaudio_${uuidv4()}${safeAudioExt(file.originalname)}`),
 });
 const upload = multer({ storage, limits: { fileSize: 300 * 1024 * 1024 } });
 
@@ -76,8 +85,10 @@ const runSeparation = async (jobId) => {
     const vocalsName = "vocals" + extname(vocals);
     const instruName = "instrumental" + extname(instrumental);
     const vocalsDest = join(jobOut, vocalsName);
-    await copyFile(vocals, vocalsDest);
-    await copyFile(instrumental, join(jobOut, instruName));
+    // rename() : stemsTmp est jetable (supprimé dans le "finally" ci-dessous),
+    // vocals/instrumental n'y sont plus utilisés après ce déplacement.
+    await rename(vocals, vocalsDest);
+    await rename(instrumental, join(jobOut, instruName));
     updateJob(jobId, {
       stemsStatus: "done",
       dereverbStatus: "idle",
@@ -119,7 +130,8 @@ const runDereverb = async (jobId) => {
   try {
     const cleanPath = await dereverbVocals(vocalsPath, dereverbTmp);
     const cleanName = "vocals_clean" + extname(cleanPath);
-    await copyFile(cleanPath, join(jobOut, cleanName));
+    // rename() : dereverbTmp est jetable (supprimé dans le "finally" ci-dessous).
+    await rename(cleanPath, join(jobOut, cleanName));
     updateJob(jobId, {
       dereverbStatus: "done",
       vocalsClean: `/outputs/clip-editor/${jobId}/${cleanName}`,
@@ -178,8 +190,10 @@ router.post("/extract", async (req, res) => {
 
       // Le WAV est conservé dans data/outputs/ (pas dans tmp/, qui sera
       // nettoyé) pour pouvoir lancer la séparation Demucs plus tard à la
-      // demande, sans re-télécharger ni ré-extraire l'audio.
-      await copyFile(wav, join(jobOut, "source.wav"));
+      // demande, sans re-télécharger ni ré-extraire l'audio. rename() plutôt
+      // que copyFile() : la source (tmp) n'est plus utilisée après ce point,
+      // un déplacement (même disque) évite de dupliquer le WAV sur le disque.
+      await rename(wav, join(jobOut, "source.wav"));
 
       updateJob(jobId, {
         status: "done", step: 3, label: "Terminé",
@@ -203,7 +217,10 @@ router.post("/extract", async (req, res) => {
     try {
       await videoDownloadPromise;
       const videoDest = join(jobOut, "video.mp4");
-      await copyFile(videoPath, videoDest);
+      // rename() plutôt que copyFile() : videoPath (tmp) n'est plus utilisé
+      // après ce point, seul videoDest continue de servir (stripAudio juste
+      // en dessous) — évite de dupliquer la vidéo brute sur le disque.
+      await rename(videoPath, videoDest);
       updateJob(jobId, { video: `/outputs/clip-editor/${jobId}/video.mp4` });
       console.log(`✅ [clip-editor] vidéo ${jobId} prête`);
 

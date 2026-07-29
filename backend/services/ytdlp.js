@@ -17,6 +17,28 @@ const AUDIO_EXTS = [".wav", ".opus", ".webm", ".m4a", ".mp3", ".ogg", ".flac", "
 
 const findWithExt = (base, exts) => exts.map(e => base + e).find(p => existsSync(p));
 
+// ── Garde-fou sécurité (audit juillet 2026) ─────────────────────────────
+// downloadAudio/downloadVideo interpolent `videoId` DIRECTEMENT dans une
+// commande shell (execAsync) ET dans un chemin de cache disque
+// (join(cacheDir, videoId)). Le frontend ne fournit normalement que des ids
+// YouTube valides (résultats de recherche déjà validés côté API, ou lien
+// collé filtré par une regex 11 caractères — cf. Ext.jsx/Deck.jsx
+// extractYoutubeId), mais RIEN ne garantit ça côté serveur : ces routes
+// acceptent `videoId` tel quel depuis le corps de la requête HTTP. Un id
+// contenant des métacaractères shell (`"`, `;`, `` ` ``, `$(...)`) pourrait
+// exécuter une commande arbitraire ; un id du type `../../x` pourrait écrire
+// en dehors du dossier de cache. Un id YouTube valide est TOUJOURS
+// exactement 11 caractères alphanumériques/_/- (format documenté YouTube) —
+// on le vérifie ici, au point d'usage, pour protéger l'opération dangereuse
+// quel que soit l'appelant (défense en profondeur, plutôt que de compter sur
+// chaque route à valider elle-même).
+const YOUTUBE_ID_RE = /^[A-Za-z0-9_-]{11}$/;
+const assertValidVideoId = (videoId) => {
+  if (!YOUTUBE_ID_RE.test(videoId || "")) {
+    throw new Error(`videoId invalide : "${videoId}"`);
+  }
+};
+
 // YouTube renvoie régulièrement des 403 Forbidden / "Requested format is not
 // available" sur certains formats/itags selon le "player client" utilisé :
 // PO token manquant, ou expérience "SABR-only streaming" déployée côté
@@ -45,6 +67,7 @@ const runWithClientFallback = async (buildCmd, timeout) => {
 };
 
 export const downloadAudio = async (videoId, outputPath) => {
+  assertValidVideoId(videoId);
   const cacheDir = join(CACHE_DIR, "audio");
   mkdirSync(cacheDir, { recursive: true });
   const cacheBase = join(cacheDir, videoId);
@@ -63,7 +86,16 @@ export const downloadAudio = async (videoId, outputPath) => {
       // "bestaudio" seul peut être absent pour un client/vidéo donné (SABR) ;
       // se rabattre sur "best" (audio+vidéo combinés) permet à --extract-audio
       // d'en extraire la piste audio plutôt que d'échouer immédiatement.
-      (client) => `yt-dlp --remote-components ejs:github --extractor-args "youtube:player_client=${client}" -f "bestaudio/best" --extract-audio --audio-format wav -o "${outputPath}" "${url}"`,
+      // --postprocessor-args : force directement 44.1kHz/stéréo dans LA MÊME
+      // passe ffmpeg que yt-dlp utilise déjà pour produire le WAV (YouTube
+      // sert très souvent de l'Opus à 48kHz) — évite qu'une 2e passe ffmpeg
+      // complète (services/ffmpeg.js:extractAudio, appelée juste après par
+      // tous les routes/*.js) doive redécoder/ré-encoder tout le fichier une
+      // 2e fois pour la même normalisation. extractAudio garde un garde-fou
+      // (vérifie le format réel avant de sauter sa propre passe) au cas où
+      // ces args échoueraient silencieusement sur une combinaison de
+      // versions yt-dlp/ffmpeg imprévue.
+      (client) => `yt-dlp --remote-components ejs:github --extractor-args "youtube:player_client=${client}" -f "bestaudio/best" --extract-audio --audio-format wav --postprocessor-args "ffmpeg:-ar 44100 -ac 2" -o "${outputPath}" "${url}"`,
       120000
     );
   } catch (err) {
@@ -78,21 +110,47 @@ export const downloadAudio = async (videoId, outputPath) => {
   return outputPath;
 };
 
-export const downloadVideo = async (videoId, outputPath) => {
+// maxHeight (perf audit — optimisation Demucs/vidéo) : optionnel, borne la
+// résolution TÉLÉCHARGÉE. Utilisé UNIQUEMENT par le pipeline mashup
+// (routes/mashup.js), dont le montage final (exportMP4_916) downscale de
+// toute façon tout à 1920x1080 — télécharger une source 4K/2K pour la
+// rescaler immédiatement après gaspille à la fois la bande passante ET le
+// temps de décodage/filtrage ffmpeg (bien plus de pixels à traiter par frame
+// pour un résultat visuel identique une fois réduit à 1080p). Laissé à null
+// (résolution native, comportement inchangé) pour routes/clipEditor.js, où la
+// vidéo est livrée à l'utilisateur en stream-copy SANS ré-encodage — la
+// résolution téléchargée ICI est celle reçue par l'utilisateur, donc jamais
+// plafonnée par défaut.
+// Suffixe de cache dépendant de maxHeight : évite qu'un appel plafonné
+// (mashup) et un appel plein résolution (clip editor) sur LA MÊME vidéo ne se
+// marchent dessus via un cache partagé — chaque variante a son propre fichier.
+export const downloadVideo = async (videoId, outputPath, maxHeight = null) => {
+  assertValidVideoId(videoId);
   const cacheDir = join(CACHE_DIR, "video");
   mkdirSync(cacheDir, { recursive: true });
-  const cachePath = join(cacheDir, `${videoId}.mp4`);
+  const cacheSuffix = maxHeight ? `_${maxHeight}p` : "";
+  const cachePath = join(cacheDir, `${videoId}${cacheSuffix}.mp4`);
 
   if (existsSync(cachePath)) {
     await copyFile(cachePath, outputPath);
-    console.log(`[ytdlp] vidéo servie depuis le cache : ${videoId}`);
+    console.log(`[ytdlp] vidéo servie depuis le cache : ${videoId}${cacheSuffix}`);
     return outputPath;
   }
 
   const url = `https://www.youtube.com/watch?v=${videoId}`;
+  const hf = maxHeight ? `[height<=${maxHeight}]` : "";
   try {
+    // vcodec^=avc1 (H.264) EXIGÉ explicitement, pas juste "ext=mp4" : YouTube
+    // sert de plus en plus de flux "mp4" encodés en AV1 (itags récents haute
+    // qualité) — un conteneur .mp4 valide, mais dont le codec vidéo n'est lu
+    // par aucun lecteur vidéo un peu ancien/basique (Windows, TV, etc.).
+    // Toute la suite du pipeline "clip editor" (stripAudio/recomposeReplace
+    // dans services/clipEditor.js) fait un stream-copy (-c:v copy) SANS
+    // jamais ré-encoder la vidéo — le codec choisi ICI est donc celui qui
+    // finit tel quel dans le fichier livré à l'utilisateur. On force H.264,
+    // universellement compatible, avec repli progressif si indisponible.
     await runWithClientFallback(
-      (client) => `yt-dlp --remote-components ejs:github --extractor-args "youtube:player_client=${client}" -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" -o "${outputPath}" "${url}"`,
+      (client) => `yt-dlp --remote-components ejs:github --extractor-args "youtube:player_client=${client}" -f "bestvideo${hf}[vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/best${hf}[vcodec^=avc1][ext=mp4]/bestvideo${hf}[ext=mp4]+bestaudio[ext=m4a]/best${hf}[ext=mp4]/best${hf}/best" -o "${outputPath}" "${url}"`,
       180000
     );
   } catch (err) {
@@ -163,7 +221,12 @@ export const searchYouTube = (query, maxResults = 25) => new Promise((resolve, r
             ? item.thumbnails[item.thumbnails.length - 1].url
             : `https://i.ytimg.com/vi/${item.id}/mqdefault.jpg`,
           durationSec,
-          isOfficial: /\bofficial\b|\bvevo\b|clip officiel/i.test(title) || /\bofficial\b|\bvevo\b/i.test(channel),
+          // Cf. commentaire détaillé dans routes/youtube.js — même heuristique,
+          // "- Topic" inclus (chaînes auto-générées YouTube depuis l'audio
+          // officiel/Content ID d'un label).
+          isOfficial: /\bofficial\b|\bvevo\b|clip officiel/i.test(title)
+            || /\bofficial\b|\bvevo\b/i.test(channel)
+            || /- topic$/i.test(channel.trim()),
           unavailable: durationSec != null && durationSec > MAX_DURATION_SEC,
           unavailableReason: durationSec != null && durationSec > MAX_DURATION_SEC
             ? `Trop long (${Math.round(durationSec / 60)} min, max 7 min)` : null,

@@ -46,6 +46,10 @@ export default function LyricsModal({ video, onClose }) {
 
   if (!video) return null;
 
+  // Fenêtre FLOTTANTE fermable (retour utilisateur, juillet 2026 — 1ère
+  // tentative passée en inline par erreur : "ça s'ouvre en dessous", le
+  // besoin réel était l'inverse — rendu en overlay plein écran, centré,
+  // par-dessus le Deck, fermable via ✕ ou clic à l'extérieur).
   return (
     <div
       style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.88)", backdropFilter:"blur(8px)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000 }}

@@ -33,6 +33,10 @@ export default function PromptSunoModal({ video, onClose }) {
 
   if (!video) return null;
 
+  // Fenêtre FLOTTANTE fermable (retour utilisateur, juillet 2026 — même
+  // correctif que LyricsModal.jsx : la 1ère tentative en inline était une
+  // erreur, le besoin réel est l'inverse — overlay plein écran, centré,
+  // fermable via ✕ ou clic à l'extérieur).
   return (
     <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.88)", backdropFilter:"blur(10px)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000 }} onClick={onClose}>
       <div onClick={e=>e.stopPropagation()} style={{ background:"#0f0f0f", border:"1px solid #222", borderRadius:14, padding:28, width:540, maxWidth:"90vw", boxShadow:"0 20px 60px rgba(0,0,0,0.9)" }}>

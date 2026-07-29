@@ -48,14 +48,6 @@ export default function CoverGenerator({ trackA, trackB, onClose, onCoverGenerat
     setLoading(false);
   };
 
-  const download = () => {
-    const a = document.createElement("a");
-    a.href = imageUrl;
-    a.download = `cover-${Date.now()}.png`;
-    a.target = "_blank";
-    a.click();
-  };
-
   return (
     <div style={{
       position:"fixed", inset:0,
@@ -268,7 +260,11 @@ export default function CoverGenerator({ trackA, trackB, onClose, onCoverGenerat
               </div>
             )}
 
-            {/* Actions */}
+            {/* Actions — bouton de téléchargement retiré (demande explicite,
+                juillet 2026 : la pochette IA ne sert pas dans l'analyse,
+                contrairement aux mashups eux-mêmes) ; ne reste que
+                "regénérer". La pochette reste consultable/copiable via clic
+                droit sur l'image comme n'importe quelle image web. */}
             {imageUrl && imgLoaded && (
               <div style={{ display:"flex", gap:10 }}>
                 <button onClick={generate} style={{
@@ -279,13 +275,6 @@ export default function CoverGenerator({ trackA, trackB, onClose, onCoverGenerat
                 onMouseEnter={e => e.currentTarget.style.color="white"}
                 onMouseLeave={e => e.currentTarget.style.color="#888"}>
                   ↺ REGÉNÉRER
-                </button>
-                <button onClick={download} style={{
-                  padding:"9px 20px", borderRadius:8,
-                  border:"1px solid #cc00ff", background:"rgba(204,0,255,0.15)",
-                  color:"#cc00ff", fontSize: 13, fontWeight:700, cursor:"pointer", letterSpacing:1
-                }}>
-                  ⬇ TÉLÉCHARGER
                 </button>
               </div>
             )}

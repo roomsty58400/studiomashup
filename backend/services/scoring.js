@@ -7,31 +7,70 @@
 // module ne fait que comparer des nombres déjà calculés, donc le score entre
 // 2 morceaux déjà analysés est instantané (0ms, pas de GPU/CPU sollicité).
 //
-// Pondération du score global (cahier des charges) :
-//   BPM        20%
-//   Clé        20%
+// Pondération du score global — révisée (BPM 20→15%, Clé 20→15%, Structure
+// 25→30%, Spectral 15→20%, Énergie inchangée à 20%) :
+//   BPM        15%
+//   Clé        15%
 //   Énergie    20%
-//   Structure  25%
-//   Spectral   15%
+//   Structure  30%
+//   Spectral   20%
+// Raisonnement : au moment de la 1ère version, un écart de BPM ou de clé
+// était en grande partie subi (fenêtre de tempo étroite, pitch-shift limité
+// à ±1 demi-ton). Depuis, rubberband (étirement tempo quasi sans perte, cf.
+// safeTempoRatio dans ffmpeg.js) et le pitch-shift à formants préservés (cf.
+// MAX_VOCAL_SHIFT_SEMITONES ci-dessous) permettent de CORRIGER activement un
+// écart de BPM/clé avec une perte de qualité minime — leur compatibilité
+// "brute" pèse donc moins sur la qualité finale réelle du mashup. À
+// l'inverse, Structure (forme du morceau) et Spectral (timbre/texture) ne
+// sont jamais corrigés algorithmiquement : seule une BONNE PAIRE de morceaux
+// (et de segments, cf. pickBestSegmentPair dans routes/mashup.js) peut être
+// compatible sur ces 2 axes — ils méritent donc plus de poids dans le score.
 //
 // ── Verrou anti-décrochage vocal ("gatekeeper") ──
 // Distinct du sous-score Clé (qui évalue la compatibilité harmonique au sens
 // large, façon roue de Camelot) : ce verrou calcule le pitch-shift RÉEL (en
 // demi-tons) qu'il faudrait appliquer à la voix du morceau A pour l'accorder
-// sur la tonalité du morceau B. Au-delà de ±1 demi-ton, la voix commence à
-// sonner artificiellement (timbre dénaturé) — le mashup est alors invalidé
-// (score global forcé à 0), quels que soient les autres sous-scores.
+// sur la tonalité du morceau B. Au-delà de MAX_VOCAL_SHIFT_SEMITONES, la voix
+// commence à sonner artificiellement (timbre dénaturé) — le mashup est alors
+// invalidé (score global forcé à 0), quels que soient les autres sous-scores.
+//
+// Seuil : ±1 → ±2 → ±3 → REDESCENDU à ±2 demi-tons (ffmpeg.js). formant=preserved
+// (rubberband) réduit bien l'effet "voix dénaturée" par rapport au
+// comportement par défaut, mais ne l'élimine pas totalement au-delà de 2
+// demi-tons dans la pratique — retour utilisateur direct : "la voix devient
+// du chipmunk" à ±3. La préservation des formants reste activée (elle
+// améliore la qualité SOUS ce seuil), mais ±3 s'est avéré trop optimiste
+// comme limite haute par défaut. Un curseur manuel (Mixer.jsx, "Réglages
+// avancés") permet toujours de forcer un décalage plus important si
+// l'utilisateur l'accepte sciemment, en connaissance de cause.
+const MAX_VOCAL_SHIFT_SEMITONES = 2;
 
 const PITCHES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 
 const clamp = (v, min = 0, max = 100) => Math.min(max, Math.max(min, v));
+
+// ── Confiance de la détection de clé (cf. analyzer.js : key_confidence) ──
+// En dessous de ce seuil, la corrélation Krumhansl-Schmuckler est trop faible
+// pour qu'on fasse confiance à key_pitch/camelot — typiquement des morceaux
+// très percussifs/atonaux où l'algo "invente" une tonalité peu significative.
+// Les analyses antérieures à l'ajout de ce champ n'ont pas de key_confidence
+// stockée (colonne NULL) : on les traite comme fiables (valeur par défaut 1)
+// plutôt que de dégrader silencieusement des morceaux déjà analysés.
+const KEY_CONFIDENCE_MIN = 0.35;
 
 // ── BPM (20%) ──
 // Tolère l'équivalence "double/moitié tempo" (90 BPM se mixe avec du 180 BPM
 // en jouant l'un à double vitesse) — pratique standard en DJing. Au-delà de
 // ~8% d'écart relatif (tolérance typique d'un pitch fader CDJ/vinyle), le
 // score tombe à 0.
-const TEMPO_TOLERANCE = 0.08;
+// Élargie de 0.08 → 0.12 (8% → 12%) : retour utilisateur "ça bloque trop
+// souvent" — combiné à l'étirement temporel rubberband (quasi sans perte,
+// cf. safeTempoRatio dans ffmpeg.js, qui tolère un écart bien plus grand que
+// ce seuil de SCORE), un écart de 8 à 12% reste parfaitement rattrapable
+// sans artéfact audible. Un curseur manuel (Mixer.jsx, "Réglages avancés")
+// permet en plus de forcer un ratio de tempo précis si l'utilisateur préfère
+// s'écarter volontairement de la correction automatique.
+const TEMPO_TOLERANCE = 0.12;
 export function scoreBpm(bpmA, bpmB) {
   if (!bpmA || !bpmB) return 0;
   const relDiff = (a, b) => Math.abs(a - b) / Math.max(a, b);
@@ -140,7 +179,7 @@ export function scoreSpectral(mfccA, mfccB) {
   return clamp(((cosine + 1) / 2) * 100);
 }
 
-const WEIGHTS = { bpm: 0.20, key: 0.20, energy: 0.20, structure: 0.25, spectral: 0.15 };
+const WEIGHTS = { bpm: 0.15, key: 0.15, energy: 0.20, structure: 0.30, spectral: 0.20 };
 
 // ── Score global ──
 // trackA / trackB : lignes telles que stockées en SQLite (cf. db/schema.sql)
@@ -159,11 +198,28 @@ export function computeCompatibility(trackA, trackB) {
   const mfccB = parseMaybeJson(trackB.mfcc_json ?? trackB.mfcc_mean);
 
   const shift = semitoneShift(trackA.key_pitch, trackB.key_pitch);
-  const gated = shift !== null && Math.abs(shift) > 1;
+
+  // NULL/undefined (analyses faites avant l'ajout de key_confidence) → 1
+  // (fiable), pas 0 : on ne veut pas dégrader silencieusement les analyses
+  // déjà en cache.
+  const confA = trackA.key_confidence ?? 1;
+  const confB = trackB.key_confidence ?? 1;
+  const keyReliable = confA >= KEY_CONFIDENCE_MIN && confB >= KEY_CONFIDENCE_MIN;
+
+  // Le verrou anti-décrochage vocal ne doit s'appliquer QUE si on fait
+  // confiance à la clé détectée des 2 morceaux : sur une détection peu fiable,
+  // le shift calculé peut être faux dans un sens ou dans l'autre — invalider
+  // le mashup (score forcé à 0) sur la base d'un chiffre non fiable serait
+  // pire que de laisser passer un éventuel léger décrochage.
+  const gated = keyReliable && shift !== null && Math.abs(shift) > MAX_VOCAL_SHIFT_SEMITONES;
 
   const sub = {
     bpm: scoreBpm(trackA.bpm, trackB.bpm),
-    key: gated ? 0 : scoreKey(trackA.camelot, trackB.camelot),
+    // Idem : le sous-score Clé perd son sens si la détection sous-jacente est
+    // peu fiable — on retombe sur une valeur neutre (50) plutôt que sur un
+    // score de compatibilité Camelot potentiellement construit sur une clé
+    // fausse (ni bonus ni pénalité indue).
+    key: gated ? 0 : (keyReliable ? scoreKey(trackA.camelot, trackB.camelot) : 50),
     energy: scoreEnergy(trackA, trackB),
     structure: scoreStructure(structureA, structureB),
     spectral: scoreSpectral(mfccA, mfccB),
@@ -191,8 +247,11 @@ export function computeCompatibility(trackA, trackB) {
     weights: WEIGHTS,
     pitchShiftSemitones: shift,
     vocalLockEngaged: gated,
+    keyConfidence: { a: confA, b: confB, reliable: keyReliable },
     invalidReason: gated
-      ? `Décrochage vocal : ${shift > 0 ? "+" : ""}${shift} demi-ton(s) requis pour accorder la voix de A sur B (max ±1 autorisé).`
-      : null,
+      ? `Décrochage vocal : ${shift > 0 ? "+" : ""}${shift} demi-ton(s) requis pour accorder la voix de A sur B (max ±${MAX_VOCAL_SHIFT_SEMITONES} autorisé, formants préservés).`
+      : (!keyReliable
+          ? `Détection de clé peu fiable (confiance A=${confA.toFixed(2)}, B=${confB.toFixed(2)}) — score Clé neutre, verrou de décrochage vocal désactivé.`
+          : null),
   };
 }

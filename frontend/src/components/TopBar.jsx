@@ -120,7 +120,7 @@ function LiveClock() {
   );
 }
 
-export default function TopBar({ activeView = "studio", onChangeView }) {
+export default function TopBar({ activeView = "studio", onChangeView, onDemo }) {
   const [user, setUser] = useState(null);
 
   // Lire les params URL après callback OAuth
@@ -166,66 +166,86 @@ export default function TopBar({ activeView = "studio", onChangeView }) {
         {onChangeView && (
           <div className="view-switch">
             <button
-              className={`view-btn ${activeView === "studio" ? "active" : ""}`}
+              className={`view-btn view-btn--studio ${activeView === "studio" ? "active" : ""}`}
               onClick={() => onChangeView("studio")}
-              title="Mixer deux titres"
+              data-tooltip="Mixer 2 à 5 titres (mashup à la carte)"
             >
               🎚 MACHEUP
             </button>
             <button
-              className={`view-btn ${activeView === "clip" ? "active" : ""}`}
+              className={`view-btn view-btn--clip ${activeView === "clip" ? "active" : ""}`}
               onClick={() => onChangeView("clip")}
-              title="Transformer le son d'un clip avec une IA"
+              data-tooltip="Transformer le son d'un clip avec une IA"
             >
               🎬 CLIP EDITOR
+            </button>
+            <button
+              className={`view-btn view-btn--wheel ${activeView === "wheel" ? "active" : ""}`}
+              onClick={() => onChangeView("wheel")}
+              data-tooltip="Trouver des clips compatibles (rythmique/harmonie) pour un mix ou un mashup"
+            >
+              🎡 MACHWHEEL
+            </button>
+            <button
+              className={`view-btn view-btn--ext ${activeView === "ext" ? "active" : ""}`}
+              onClick={() => onChangeView("ext")}
+              data-tooltip="DJMUP"
+            >
+              🧩 DJMUP
             </button>
           </div>
         )}
         <RadioPlayer />
-        <button className="top-icon-btn" title="Paramètres">⚙</button>
-        <a href="https://rave.dj" target="_blank" rel="noreferrer" className="top-btn rave topbar-fixed-btn">
-          ⊕ RAVE.DJ
-        </a>
-        <a href="https://suno.com" target="_blank" rel="noreferrer" className="top-btn suno topbar-fixed-btn">
-          ✦ SUNO
-        </a>
-        {user ? (
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            {user.avatar ? (
-              <img
-                src={user.avatar.replace(/=s\d+-c/, "=s64-c")}
-                referrerPolicy="no-referrer"
-                alt={user.name}
-                style={{ width: 30, height: 30, borderRadius: "50%",
-                  border: "2px solid rgba(0,234,255,0.45)", objectFit: "cover", flexShrink: 0 }}
-              />
-            ) : (
-              <div style={{ width: 30, height: 30, borderRadius: "50%",
-                background: "rgba(0,234,255,0.15)", border: "2px solid rgba(0,234,255,0.45)",
-                display: "flex", alignItems: "center", justifyContent: "center",
-                fontSize: 15, color: "#00eaff", flexShrink: 0 }}>
-                {user.name?.[0]?.toUpperCase()}
-              </div>
-            )}
-            <span style={{ fontSize: 13, color: "#aaa", maxWidth: 110,
-              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {user.name}
-            </span>
-            <button onClick={handleLogout} title="Se déconnecter"
-              style={{ background: "transparent", border: "1px solid rgba(255,60,60,0.3)",
-                color: "#f55", borderRadius: 6, width: 26, height: 26, cursor: "pointer",
-                fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center",
-                flexShrink: 0, transition: "all 0.2s" }}
-              onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,60,60,0.15)"; e.currentTarget.style.borderColor = "#f55"; }}
-              onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.borderColor = "rgba(255,60,60,0.3)"; }}>
-              ✕
-            </button>
-          </div>
-        ) : (
-          <button className="login-btn topbar-fixed-btn" onClick={handleLogin}>
-            GOOGLE
+
+        {/* Bloc pads FX 2x2 (Paramètres / RAVE.DJ / SUNO / Google) — retour
+            utilisateur : regrouper ces 4 boutons hétéroclites façon bloc de
+            pads d'effets rétroéclairés d'une platine/contrôleur DJ, au lieu
+            d'une rangée de boutons de formes différentes. Même codage visuel
+            (LED de couleur de fonction) que les .dj-pad du Mixer. */}
+        <div className="fx-pad-grid">
+          {/* Ancien bouton SET (jamais câblé, retour utilisateur : "SET"
+              n'avait aucune fonction) remplacé par DEMO (juillet 2026) :
+              charge directement les 2 pistes utilisées pour tester l'app
+              (Darude - Sandstorm × Eiffel 65 - Blue) dans les Decks A/B, en
+              mode Combo "à la carte" avec "Durée ciblée (façon RaveDJ)"
+              activé — cf. App.jsx::handleDemo et ComboPanel.jsx::demoToken.
+              Retirer ce bouton casserait la grille 2x2 volontairement à 4
+              pads (cf. .fx-pad-grid ci-dessous, grid-template 2x2 fixe) en
+              laissant une case vide. */}
+          {/* data-tooltip retiré sur les 4 pads (retour utilisateur : bulles
+              de légende au survol pas voulues ici) — le libellé (DEMO/RAVE.DJ/
+              SUNO/GOOGLE ou SORTIR) reste affiché directement sur chaque pad,
+              donc aucune perte d'information. Le titre HTML natif du navigateur
+              (title="...") n'est pas ajouté non plus, pour éviter qu'il ne le
+              remplace par une autre bulle système. */}
+          <button className="fx-pad fx-pad--settings" onClick={() => onDemo && onDemo()}>
+            <span className="fx-pad-icon">▶</span>
+            <span className="fx-pad-label">DEMO</span>
           </button>
-        )}
+          <a href="https://rave.dj" target="_blank" rel="noreferrer" className="fx-pad fx-pad--rave">
+            <span className="fx-pad-icon">⊕</span>
+            <span className="fx-pad-label">RAVE.DJ</span>
+          </a>
+          <a href="https://suno.com" target="_blank" rel="noreferrer" className="fx-pad fx-pad--suno">
+            <span className="fx-pad-icon">✦</span>
+            <span className="fx-pad-label">SUNO</span>
+          </a>
+          {user ? (
+            <button className="fx-pad fx-pad--google fx-pad--profile" onClick={handleLogout}>
+              {user.avatar ? (
+                <img src={user.avatar.replace(/=s\d+-c/, "=s64-c")} referrerPolicy="no-referrer" alt={user.name} />
+              ) : (
+                <span className="fx-pad-avatar-fallback">{user.name?.[0]?.toUpperCase()}</span>
+              )}
+              <span className="fx-pad-label">✕ SORTIR</span>
+            </button>
+          ) : (
+            <button className="fx-pad fx-pad--google" onClick={handleLogin}>
+              <span className="fx-pad-icon">G</span>
+              <span className="fx-pad-label">GOOGLE</span>
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

@@ -58,6 +58,9 @@ function VideoSearch({ onSelect }) {
   const [searching, setSearching] = useState(false);
   const [showResults, setShowResults] = useState(false);
   const [searchError, setSearchError] = useState(null);
+  // Cf. Deck.jsx — même filtre "Officiels uniquement", même comportement
+  // (désactivé par défaut, filtrage client instantané).
+  const [officialOnly, setOfficialOnly] = useState(false);
   const timeoutRef = useRef(null);
   const abortRef = useRef(null);
 
@@ -101,6 +104,9 @@ function VideoSearch({ onSelect }) {
     onSelect(v);
   };
 
+  // Cf. Deck.jsx — résultats affichés, filtrés sur ✓ OFFICIEL si activé.
+  const visibleResults = officialOnly ? results.filter(v => v.isOfficial) : results;
+
   return (
     <div style={{ position: "relative" }}>
       <div className="search-row">
@@ -117,8 +123,17 @@ function VideoSearch({ onSelect }) {
 
       {showResults && (
         <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "#0f0f0f",
-          border: "1px solid rgba(0,234,255,0.2)", borderRadius: 8, zIndex: 50, maxHeight: 320,
+          border: "1px solid rgba(0,234,255,0.2)", borderRadius: 8, zIndex: 50, maxHeight: 360,
           overflowY: "auto", boxShadow: "0 8px 32px rgba(0,0,0,0.8)" }}>
+          {!searching && !searchError && results.length > 0 && (
+            <label style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 12px",
+              borderBottom: "1px solid #1a1a1a", fontSize: 11, fontWeight: 700, color: officialOnly ? "var(--green)" : "#888",
+              cursor: "pointer", userSelect: "none", position: "sticky", top: 0, background: "#0f0f0f", zIndex: 1 }}>
+              <input type="checkbox" checked={officialOnly} onChange={e => setOfficialOnly(e.target.checked)}
+                style={{ accentColor: "var(--green)", cursor: "pointer" }} />
+              ✓ Officiels uniquement <span style={{ opacity: 0.6, fontWeight: 400 }}>(meilleure source audio pour la séparation)</span>
+            </label>
+          )}
           {searching && <div style={{ padding: "12px 14px", color: "#555", fontSize: 13 }}>Recherche…</div>}
           {!searching && searchError && (
             <div style={{ padding: "12px 14px", color: "#ff6666", fontSize: 13 }}>⚠ {searchError}</div>
@@ -126,7 +141,10 @@ function VideoSearch({ onSelect }) {
           {!searching && !searchError && results.length === 0 && query.length >= 2 && (
             <div style={{ padding: "12px 14px", color: "#555", fontSize: 13 }}>Aucun résultat.</div>
           )}
-          {results.map(v => (
+          {!searching && !searchError && results.length > 0 && visibleResults.length === 0 && (
+            <div style={{ padding: "12px 14px", color: "#555", fontSize: 13 }}>Aucun clip officiel trouvé — désactive le filtre pour voir les autres résultats.</div>
+          )}
+          {visibleResults.map(v => (
             <div key={v.videoId} onClick={() => { if (!v.unavailable) handlePick(v); }}
               title={v.unavailable ? v.unavailableReason : undefined}
               style={{ display: "flex", gap: 10, padding: "8px 12px", cursor: v.unavailable ? "not-allowed" : "pointer",
@@ -219,12 +237,16 @@ function ExtractProgress({ job }) {
   );
 }
 
-// ── Carte de téléchargement d'un stem (voix / instru / piste complète) ──
+// ── Carte d'un stem (voix / instru / piste complète) ──
 // La séparation Demucs démarre automatiquement et en tâche de fond dès que
 // l'extraction est prête (cf. handleSeparate / backend) : tant qu'elle
 // tourne, la carte affiche juste un indicateur discret (pas d'action requise
 // de l'utilisateur). Un bouton n'apparaît qu'en cas d'erreur, pour réessayer.
-function StemCard({ icon, label, hint, url, downloadName, pending, pendingLabel, showRetry, onAction }) {
+// Bouton "⬇ Télécharger" retiré (demande explicite, juillet 2026 : ne sert
+// plus dans le workflow réel de l'utilisateur) — ne reste qu'un indicateur
+// "prêt" une fois la piste disponible ; downloadName/url conservés en props
+// pour ne pas casser les appelants, mais ne servent plus qu'en interne.
+function StemCard({ icon, label, hint, pending, pendingLabel, showRetry, onAction }) {
   return (
     <div style={{ flex: 1, minWidth: 160, background: "var(--surface2)", border: "1px solid var(--border)",
       borderRadius: 10, padding: "12px 14px", display: "flex", flexDirection: "column", height: "100%" }}>
@@ -247,12 +269,11 @@ function StemCard({ icon, label, hint, url, downloadName, pending, pendingLabel,
           </div>
         )
       ) : (
-        <a href={`${API}${url}`} download={downloadName || true}
-          style={{ display: "block", textAlign: "center", padding: "7px 0", borderRadius: 6,
-            background: "rgba(0,234,255,0.1)", border: "1px solid rgba(0,234,255,0.3)",
-            color: "var(--cyan)", fontSize: 12, fontWeight: 700, textDecoration: "none" }}>
-          ⬇ Télécharger
-        </a>
+        <div style={{ textAlign: "center", padding: "7px 0", borderRadius: 6,
+          background: "rgba(0,234,255,0.06)", border: "1px solid rgba(0,234,255,0.2)",
+          color: "var(--cyan)", fontSize: 12, fontWeight: 700 }}>
+          ✅ Prêt
+        </div>
       )}
     </div>
   );
@@ -470,14 +491,23 @@ export default function ClipEditor() {
   // qui se termine en tâche de fond après le passage à "done" : téléchargement
   // PUIS génération de la version sans bande son, nécessaire à l'étape ③).
   const pollingRef = useRef(false);
-  const pollJob = (id) => {
+  // ── Compteur de génération (même correctif que MashupWheel.jsx/
+  // DjAssistModal.jsx/Deck.jsx, juillet 2026) — pollingRef empêchait seulement
+  // de LANCER un 2e polling en parallèle, pas d'arrêter une boucle déjà en vol
+  // quand l'utilisateur choisit un NOUVEAU clip pendant qu'une extraction
+  // précédente tourne encore côté serveur : l'ancienne boucle tick() (fermée
+  // sur l'ancien jobId) continuait d'écraser `job` avec des données périmées.
+  const generationRef = useRef(0);
+  const pollJob = (id, gen) => {
     if (pollingRef.current) return; // une boucle de poll tourne déjà pour ce job
     pollingRef.current = true;
 
     const tick = async () => {
+      if (gen !== generationRef.current) { pollingRef.current = false; return; }
       try {
         const res = await fetch(`${API}/api/clip-editor/${id}/status`);
         const data = await res.json();
+        if (gen !== generationRef.current) { pollingRef.current = false; return; }
 
         // Le job a disparu côté serveur (ex: redémarrage du backend — les
         // jobs sont en mémoire, pas persistés) : avant, ça arrêtait le poll
@@ -499,6 +529,7 @@ export default function ClipEditor() {
         if (stillGoing) setTimeout(tick, 1500);
         else pollingRef.current = false;
       } catch (e) {
+        if (gen !== generationRef.current) { pollingRef.current = false; return; }
         setJob({ status: "error", message: "Connexion au serveur perdue : " + e.message });
         pollingRef.current = false;
       }
@@ -507,8 +538,9 @@ export default function ClipEditor() {
   };
 
   useEffect(() => {
+    generationRef.current++; // invalide tout polling en vol pour l'ancien job
     pollingRef.current = false;
-    if (jobId) pollJob(jobId);
+    if (jobId) pollJob(jobId, generationRef.current);
   }, [jobId]);
 
   const handleSelectVideo = (v) => {
@@ -532,6 +564,43 @@ export default function ClipEditor() {
     if (!selectedVideo) return;
     const { ok } = await copyToClipboard(`https://www.youtube.com/watch?v=${selectedVideo.videoId}`);
     if (ok) { setLinkCopied(true); setTimeout(() => setLinkCopied(false), 2000); }
+  };
+
+  // ── Téléchargement vidéo dans une fenêtre pop-up ──
+  // Même pattern que MashupPlayer (Mixer.jsx) : au lieu d'un simple lien
+  // <a download> qui déclenche un téléchargement silencieux, on ouvre une
+  // petite fenêtre avec la vidéo en lecture + un bouton de téléchargement
+  // explicite — permet de prévisualiser avant de télécharger, et donne un
+  // vrai retour visuel (au lieu d'un fichier qui atterrit juste dans le
+  // dossier Téléchargements sans qu'on le voie). window.open("", ...) +
+  // document.write : pas besoin de générer un fichier HTML côté serveur.
+  const openVideoDownloadPopup = (src, filename) => {
+    const popup = window.open(
+      "", "clip-editor-video",
+      "width=900,height=680,resizable=yes,scrollbars=no,status=no,menubar=no,toolbar=no"
+    );
+    if (!popup) {
+      window.alert("Le navigateur a bloqué la fenêtre pop-up. Autorise les pop-ups pour ce site pour lire/télécharger la vidéo.");
+      return;
+    }
+    const safeTitle = (filename || "clip").replace(/[<>]/g, "");
+    popup.document.write(`<!DOCTYPE html>
+<html><head><title>${safeTitle} — MacheUp Studio</title>
+<meta charset="utf-8">
+<style>
+  body { margin:0; background:#0a0a0a; height:100vh; display:flex; flex-direction:column;
+         align-items:center; justify-content:center; font-family:system-ui,sans-serif; gap:16px; }
+  video { width:100%; max-height:78vh; background:#000; }
+  a.dl { padding:12px 28px; background:#00eaff; color:#000; text-decoration:none;
+         border-radius:8px; font-weight:800; letter-spacing:1px; font-size:13px; }
+  h1 { color:#eee; font-size:13px; letter-spacing:1px; margin:0; text-align:center; padding:0 16px; }
+</style></head>
+<body>
+  <h1>${safeTitle}</h1>
+  <video controls autoplay src="${src}"></video>
+  <a class="dl" href="${src}" download="${safeTitle}">⬇ TÉLÉCHARGER LA VIDÉO</a>
+</body></html>`);
+    popup.document.close();
   };
 
   const startExtract = async () => {
@@ -558,7 +627,8 @@ export default function ClipEditor() {
       const res = await fetch(`${API}/api/clip-editor/${jobId}/separate`, { method: "POST" });
       const data = await res.json();
       if (data.error) { alert("Erreur : " + data.error); return; }
-      pollJob(jobId); // relance le polling pour suivre stemsStatus
+      pollingRef.current = false;
+      pollJob(jobId, generationRef.current); // relance le polling (même job/génération) pour suivre stemsStatus
     } catch (e) {
       alert("Erreur réseau : " + e.message);
     }
@@ -573,7 +643,8 @@ export default function ClipEditor() {
       const res = await fetch(`${API}/api/clip-editor/${jobId}/dereverb`, { method: "POST" });
       const data = await res.json();
       if (data.error) { alert("Erreur : " + data.error); return; }
-      pollJob(jobId);
+      pollingRef.current = false;
+      pollJob(jobId, generationRef.current);
     } catch (e) {
       alert("Erreur réseau : " + e.message);
     }
@@ -600,8 +671,13 @@ export default function ClipEditor() {
   const isDone = job?.status === "done";
 
   return (
-    <div className="app" style={{ paddingBottom: 40 }}>
-      <div style={{ padding: "28px 16px 0" }}>
+    <div className="app" style={{ paddingBottom: 0 }}>
+      {/* Zone de contenu scrollable indépendamment de la page : la page elle-
+          même ne scrolle jamais (cf. html/#root/.app), mais le contenu de
+          cette page est plus long que les Decks A/B — sans ceci, le surplus
+          serait simplement coupé/invisible (overflow:hidden sur .app) et le
+          bandeau Footer ci-dessous ne serait jamais atteignable. */}
+      <div style={{ padding: "28px 16px 40px", flex: 1, minHeight: 0, overflowY: "auto" }}>
 
         {/* Header */}
         <div style={{ textAlign: "center", marginBottom: 28 }}>
@@ -704,6 +780,15 @@ export default function ClipEditor() {
                   </div>
                 </div>
               </div>
+            )}
+            {job?.video && (
+              <button type="button"
+                onClick={() => openVideoDownloadPopup(`${API}${job.video}`, `${sanitizeFilename(selectedVideo?.title || job.title)}.mp4`)}
+                style={{ display: "block", width: "100%", textAlign: "center", marginTop: 8, padding: "8px 0", borderRadius: 6,
+                  background: "rgba(0,234,255,0.1)", border: "1px solid rgba(0,234,255,0.3)",
+                  color: "var(--cyan)", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                ⬇ Télécharger la vidéo (MP4)
+              </button>
             )}
             {isDone && !job.video && !job.videoError && (
               <div className="clip-frame-placeholder" style={{ marginTop: 16, minHeight: "auto", padding: 14 }}>
@@ -822,13 +907,13 @@ export default function ClipEditor() {
                       </div>
                       <div style={{ fontSize: 11, color: "var(--muted2)" }}>Générée en masqué à l'étape ① — c'est elle qui sera recomposée ci-dessous</div>
                     </div>
-                    <a href={`${API}/api/clip-editor/${jobId}/video-silent`}
-                      download={`${sanitizeFilename(selectedVideo?.title || job.title)} (sans son).mp4`}
+                    <button type="button"
+                      onClick={() => openVideoDownloadPopup(`${API}/api/clip-editor/${jobId}/video-silent`, `${sanitizeFilename(selectedVideo?.title || job.title)} (sans son).mp4`)}
                       style={{ flexShrink: 0, padding: "7px 14px", borderRadius: 6, background: "rgba(0,234,255,0.1)",
                         border: "1px solid rgba(0,234,255,0.3)", color: "var(--cyan)", fontSize: 12, fontWeight: 700,
-                        textDecoration: "none", whiteSpace: "nowrap" }}>
+                        whiteSpace: "nowrap", cursor: "pointer" }}>
                       ⬇ Télécharger
-                    </a>
+                    </button>
                   </div>
                 )}
 
@@ -899,12 +984,16 @@ export default function ClipEditor() {
                     <div className="section-label" style={{ marginBottom: 8 }}>✅ Clip recomposé</div>
                     <video src={`${API}${finalResult.url}`} controls
                       style={{ width: "100%", borderRadius: 10, display: "block", marginBottom: 12 }} />
-                    <a href={`${API}${finalResult.url}`} download
-                      style={{ display: "block", textAlign: "center", padding: "10px 0", borderRadius: 8,
+                    <button
+                      onClick={() => openVideoDownloadPopup(
+                        `${API}${finalResult.url}`,
+                        `${sanitizeFilename(selectedVideo?.title || job.title || "clip")} (recompose).mp4`
+                      )}
+                      style={{ display: "block", width: "100%", textAlign: "center", padding: "10px 0", borderRadius: 8,
                         background: "var(--cyan)", color: "#000", fontWeight: 800, fontSize: 13,
-                        textDecoration: "none", letterSpacing: 1 }}>
+                        border: "none", cursor: "pointer", letterSpacing: 1 }}>
                       ⬇ TÉLÉCHARGER LE CLIP FINAL
-                    </a>
+                    </button>
                   </div>
                 )}
               </>

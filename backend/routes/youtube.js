@@ -1,6 +1,7 @@
 import express from "express";
 import dotenv from "dotenv";
 import { searchYouTube as searchYouTubeYtdlp } from "../services/ytdlp.js";
+import { blockVideo, filterBlocked } from "../services/blockedVideos.js";
 dotenv.config();
 
 const router = express.Router();
@@ -43,6 +44,24 @@ const parseIsoDuration = (iso) => {
   return (Number(h || 0) * 3600) + (Number(mi || 0) * 60) + Number(s || 0);
 };
 
+// ── Blocage manuel d'une vidéo (appelé par le lecteur YouTube intégré quand
+// il rapporte une erreur d'intégration 101/150 — "lecture désactivée sur
+// d'autres sites Web") : persisté côté serveur, donc ce clip ne sera plus
+// jamais proposé dans aucune recherche (tous decks, toutes sessions), en
+// complément du filtre status.embeddable ci-dessous qui peut être pris en
+// défaut pour certaines vidéos.
+router.post("/block", (req, res) => {
+  const { videoId } = req.body || {};
+  if (!videoId) return res.status(400).json({ error: "videoId requis" });
+  blockVideo(videoId);
+  // Purge aussi les entrées déjà en cache qui pourraient encore contenir ce
+  // clip, sinon il resterait proposé jusqu'à expiration du cache (5 min).
+  for (const [key, entry] of searchCache.entries()) {
+    searchCache.set(key, { ...entry, data: filterBlocked(entry.data) });
+  }
+  res.json({ ok: true });
+});
+
 router.get("/search", async (req, res) => {
   const { q } = req.query;
   if (!q) return res.status(400).json({ error: "Missing query" });
@@ -51,7 +70,7 @@ router.get("/search", async (req, res) => {
   const cacheKey = q.trim().toLowerCase();
   const cached = searchCache.get(cacheKey);
   if (cached && Date.now() - cached.ts < CACHE_TTL) {
-    return res.json(cached.data);
+    return res.json(filterBlocked(cached.data));
   }
 
   try {
@@ -61,7 +80,7 @@ router.get("/search", async (req, res) => {
     // On revient à une recherche standard (fiable), puis on filtre les
     // résultats À POSTERIORI sur la vraie catégorie (10 = Musique) via
     // videos.list, qui supporte categoryId sans ce problème.
-    const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=25&q=${encodeURIComponent(q)}&key=${API_KEY}`;
+    const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=50&q=${encodeURIComponent(q)}&key=${API_KEY}`;
     const searchRes = await fetchWithTimeout(searchUrl, 8000);
     const searchData = await searchRes.json();
 
@@ -89,9 +108,9 @@ router.get("/search", async (req, res) => {
       if (isQuotaExceeded) {
         console.warn("[youtube] quota search.list dépassé — repli sur yt-dlp pour :", q);
         try {
-          const fallbackResults = await searchYouTubeYtdlp(q, 25);
+          const fallbackResults = await searchYouTubeYtdlp(q, 50);
           searchCache.set(cacheKey, { data: fallbackResults, ts: Date.now() });
-          return res.json(fallbackResults);
+          return res.json(filterBlocked(fallbackResults));
         } catch (e) {
           console.error("[youtube] repli yt-dlp échoué :", e.message);
           return res.status(502).json({ error: "Quota YouTube API dépassé pour aujourd'hui, et la recherche de secours (yt-dlp) a aussi échoué." });
@@ -118,9 +137,16 @@ router.get("/search", async (req, res) => {
     // pour un filtre/enrichissement "bonus".
     let musicIds = new Set(videoIds); // par défaut : tout garder si l'appel échoue/expire
     const durationById = new Map();
+    // status.embeddable (part "status") indique si le propriétaire a désactivé
+    // la lecture sur d'autres sites — ces clips s'affichaient avant dans les
+    // résultats (l'utilisateur ne le découvrait qu'au moment de cliquer,
+    // avec le message YouTube "Vidéo non disponible... lecture sur d'autres
+    // sites Web désactivée"). On les exclut directement des résultats, comme
+    // demandé, plutôt que de les afficher grisés façon "trop long".
+    const embeddableById = new Map();
     if (videoIds.length) {
       try {
-        const detailsUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails&id=${videoIds.join(",")}&key=${API_KEY}`;
+        const detailsUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,status&id=${videoIds.join(",")}&key=${API_KEY}`;
         const detailsRes = await fetchWithTimeout(detailsUrl, 3000);
         const detailsData = await detailsRes.json();
         if (detailsData.error) {
@@ -134,6 +160,7 @@ router.get("/search", async (req, res) => {
           if (musicOnly.length) musicIds = new Set(musicOnly);
           for (const v of (detailsData.items || [])) {
             durationById.set(v.id, parseIsoDuration(v.contentDetails?.duration));
+            embeddableById.set(v.id, v.status?.embeddable !== false);
           }
         }
       } catch (e) {
@@ -145,6 +172,10 @@ router.get("/search", async (req, res) => {
 
     const results = items
       .filter(item => musicIds.has(item.id.videoId))
+      // Exclut les vidéos dont le propriétaire a explicitement désactivé la
+      // lecture sur d'autres sites (embeddable === false) — undefined (statut
+      // inconnu, ex: appel "status" en échec) reste affiché par prudence.
+      .filter(item => embeddableById.get(item.id.videoId) !== false)
       .map(item => {
         const title = decodeHtml(item.snippet.title);
         const channel = decodeHtml(item.snippet.channelTitle);
@@ -156,9 +187,15 @@ router.get("/search", async (req, res) => {
           thumbnail: item.snippet.thumbnails.medium.url,
           durationSec,
           // Heuristique "vidéo officielle" : marqueur "officiel/VEVO" dans le
-          // titre ou le nom de chaîne — signal standard pour repérer le clip
-          // posté par l'artiste/le label plutôt qu'un re-upload/fan-made.
-          isOfficial: /\bofficial\b|\bvevo\b|clip officiel/i.test(title) || /\bofficial\b|\bvevo\b/i.test(channel),
+          // titre ou le nom de chaîne, OU chaîne "Artiste - Topic" (générée
+          // automatiquement par YouTube à partir de l'audio officiel/Content
+          // ID d'un label — signal tout aussi fiable qu'"official" bien que le
+          // mot n'apparaisse jamais dans ce cas) — signal standard pour
+          // repérer le clip posté par l'artiste/le label plutôt qu'un
+          // re-upload/fan-made, utilisé pour le filtre "Officiels uniquement".
+          isOfficial: /\bofficial\b|\bvevo\b|clip officiel/i.test(title)
+            || /\bofficial\b|\bvevo\b/i.test(channel)
+            || /- topic$/i.test(channel.trim()),
           unavailable: durationSec != null && durationSec > MAX_DURATION_SEC,
           unavailableReason: durationSec != null && durationSec > MAX_DURATION_SEC
             ? `Trop long (${Math.round(durationSec / 60)} min, max 7 min)` : null,
@@ -169,7 +206,7 @@ router.get("/search", async (req, res) => {
       .sort((a, b) => (b.isOfficial ? 1 : 0) - (a.isOfficial ? 1 : 0));
 
     searchCache.set(cacheKey, { data: results, ts: Date.now() });
-    res.json(results);
+    res.json(filterBlocked(results));
   } catch (err) {
     const timedOut = err.name === "AbortError";
     console.error("YT SEARCH ERROR:", timedOut ? "timeout (8s)" : err.message);

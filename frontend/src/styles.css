@@ -1,6 +1,19 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Orbitron:wght@700;800;900&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Orbitron:wght@700;800;900&family=Share+Tech+Mono&display=swap');
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* Scroll de la page bloqué : toute la mise en page (topbar + studio + bandeau
+   mashups + footer) doit tenir dans la hauteur de la fenêtre. #root en colonne
+   flex pour que le footer puisse être plaqué tout en bas (margin-top:auto)
+   même quand le contenu au-dessus ne remplit pas toute la hauteur. */
+html, #root {
+  height: 100%;
+  overflow: hidden;
+}
+#root {
+  display: flex;
+  flex-direction: column;
+}
 
 :root {
   --cyan: #00eaff;
@@ -11,6 +24,17 @@
   --magenta-border: rgba(204,0,255,0.5);
   --green: #aaff00;
   --green-dim: rgba(170,255,0,0.15);
+  /* Decks C/D/E (fusion MacheUp/MULTI, juillet 2026) — cf. Deck.jsx
+     DECK_PALETTE, mêmes valeurs. */
+  --yellow: #ffcc00;
+  --yellow-dim: rgba(255,204,0,0.18);
+  --yellow-border: rgba(255,204,0,0.5);
+  --teal: #00ffb3;
+  --teal-dim: rgba(0,255,179,0.18);
+  --teal-border: rgba(0,255,179,0.5);
+  --orange: #ff6a00;
+  --orange-dim: rgba(255,106,0,0.18);
+  --orange-border: rgba(255,106,0,0.5);
   --bg: #080808;
   --surface: #101010;
   --surface2: #161616;
@@ -25,8 +49,8 @@ body {
   font-family: 'Inter', sans-serif;
   background: var(--bg);
   color: var(--text);
-  min-height: 100vh;
-  overflow-x: hidden;
+  height: 100vh;
+  overflow: hidden;
 }
 
 /* ── TOPBAR ── */
@@ -126,7 +150,7 @@ body {
 
 .topbar-clock {
   position: relative;
-  width: 260px;
+  width: 325px;
   box-sizing: border-box;
   display: flex;
   justify-content: center;
@@ -200,34 +224,84 @@ body {
 
 .topbar-right { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 
-/* ── Toggle d'onglets (Mixer / Clip Editor) ── */
+/* ── Bloc pads MACHEUP / CLIP EDITOR / MACHEUP WHEEL / EXT. — façon bloc de
+   pads de performance d'un contrôleur DJ : grille 2x2 (au lieu d'un
+   empilement vertical), fond de chaque pad nettement teinté de sa couleur de
+   fonction au repos (pas seulement au survol) pour bien "ressortir", LED
+   allumée en continu sur le pad actif. */
 .view-switch {
-  display: flex; flex-direction: column; gap: 2px;
-  padding: 3px;
-  border-radius: 9px;
-  background: rgba(255,255,255,0.03);
-  border: 1px solid var(--border);
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  /* Lignes en hauteur FIXE (au lieu de 1fr, qui suivait le contenu et rendait
+     ce bloc visiblement plus haut que le bloc SET/RAVE.DJ/SUNO/GOOGLE) — même
+     gabarit de pad que .fx-pad (38px) pour que les 2 blocs soient alignés en
+     hauteur, retour utilisateur. */
+  grid-template-rows: repeat(2, 38px);
+  gap: 4px;
+  padding: 5px;
+  border-radius: 8px;
+  background: #050505;
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow: inset 0 1px 3px rgba(0,0,0,0.6), 0 1px 4px rgba(0,0,0,0.4);
 }
 .view-btn {
-  width: 100%;
-  padding: 6px 13px;
-  border-radius: 6px;
-  background: transparent;
-  border: none;
-  color: var(--muted2);
-  font-size: 11px; font-weight: 700;
-  letter-spacing: 0.5px;
+  --pad-color: var(--cyan);
+  width: 100%; height: 100%;
+  min-width: 74px;
+  padding: 2px 6px;
+  overflow: hidden;
+  border-radius: 5px;
+  border: 1px solid color-mix(in srgb, var(--pad-color) 32%, #060606);
+  background:
+    radial-gradient(circle at 30% 22%, rgba(255,255,255,0.07), transparent 45%),
+    linear-gradient(165deg,
+      color-mix(in srgb, var(--pad-color) 14%, #201f22) 0%,
+      color-mix(in srgb, var(--pad-color) 7%, #131214) 55%,
+      #0a0a0b 100%);
+  color: var(--pad-color);
+  font-size: 11.5px; font-weight: 800;
+  letter-spacing: 0.3px;
+  line-height: 1.15;
   text-align: center;
   cursor: pointer;
-  transition: all 0.2s;
-  white-space: nowrap;
+  white-space: normal;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--pad-color) 35%, transparent),
+    0 0 6px color-mix(in srgb, var(--pad-color) 16%, transparent),
+    inset 0 1px 0 rgba(255,255,255,0.08),
+    inset 0 -2px 4px rgba(0,0,0,0.5);
+  transition: transform 0.12s ease, box-shadow 0.2s, background 0.2s;
 }
-.view-btn:hover { color: white; }
+.view-btn:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    0 0 0 1.5px var(--pad-color),
+    0 0 10px color-mix(in srgb, var(--pad-color) 55%, transparent),
+    inset 0 1px 0 rgba(255,255,255,0.12),
+    inset 0 -2px 4px rgba(0,0,0,0.5);
+}
+.view-btn:active { transform: translateY(1px) scale(0.96); }
 .view-btn.active {
-  background: rgba(0,234,255,0.14);
-  color: var(--cyan);
-  box-shadow: 0 0 10px rgba(0,234,255,0.2);
+  background:
+    radial-gradient(circle at 30% 22%, rgba(255,255,255,0.13), transparent 45%),
+    linear-gradient(165deg,
+      color-mix(in srgb, var(--pad-color) 24%, #201f22) 0%,
+      color-mix(in srgb, var(--pad-color) 12%, #131214) 55%,
+      #0a0a0b 100%);
+  box-shadow:
+    0 0 0 1.5px var(--pad-color),
+    0 0 12px color-mix(in srgb, var(--pad-color) 65%, transparent),
+    inset 0 1px 0 rgba(255,255,255,0.15),
+    inset 0 -2px 4px rgba(0,0,0,0.5);
 }
+/* Couleur de fonction par pad — même trio cyan/magenta/vert déjà associé à
+   Deck A / Deck B / Mes MacheUps ailleurs sur le site ; EXT. en orange pour
+   rester distinct des 3 autres. */
+.view-btn--studio { --pad-color: var(--cyan); }
+.view-btn--clip   { --pad-color: var(--magenta); }
+.view-btn--wheel  { --pad-color: var(--green); }
+.view-btn--ext    { --pad-color: #ffaa00; }
 
 /* ── Clip Editor : cadre regroupant les étapes ① et ② côte à côte ── */
 /* ── Clip Editor : les 3 cadres d'étape reprennent le langage visuel des
@@ -364,14 +438,123 @@ body {
   .clip-frame { grid-template-columns: 1fr; }
 }
 
-/* ── Mini lecteur radio (topbar) ── */
+/* ── Mini lecteur radio (topbar) — façon face avant de platine/CDJ : panneau
+   metal brossé sombre (au lieu d'une pilule vert translucide plate), écran
+   LCD encastré pour le nom de la station, boutons play/rec en pads
+   rétroéclairés — retour utilisateur : "lui donner un côté platine de dj". ── */
 .radio-player {
+  position: relative;
+  top: -4px;
   display: flex; align-items: center; gap: 6px;
   padding: 6px 10px;
-  border-radius: 20px;
-  border: 1px solid rgba(170,255,0,0.28);
-  background: rgba(170,255,0,0.04);
-  box-shadow: 0 0 12px rgba(170,255,0,0.08), inset 0 0 8px rgba(170,255,0,0.04);
+  border-radius: 14px;
+  border: 1px solid rgba(170,255,0,0.3);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.05), transparent 40%),
+    linear-gradient(165deg, #171a10 0%, #0d0f09 60%, #080905 100%);
+  box-shadow:
+    0 0 12px rgba(170,255,0,0.10),
+    inset 0 1px 0 rgba(255,255,255,0.06),
+    inset 0 0 10px rgba(170,255,0,0.05);
+}
+
+/* Titre en cours, façon carrousel défilant, juste sous le mini-player —
+   accompagné du bouton ⏺ Enregistrer sur la même ligne. */
+.radio-nowplaying-row {
+  position: absolute;
+  top: 100%; left: -4px; right: -4px;
+  margin-top: 5px;
+  display: flex;
+  align-items: stretch;
+  gap: 5px;
+  z-index: 40;
+}
+/* Écran LCD encastré (façon afficheur de titre CDJ) : fond quasi noir avec un
+   très léger scanline horizontal + halo vert en haut, texte en police
+   digitale (Share Tech Mono) avec lueur phosphore — cf. .radio-nowplaying-track. */
+.radio-nowplaying {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 22px;
+  overflow: hidden;
+  border-radius: 5px;
+  border: 1px solid rgba(170,255,0,0.22);
+  background:
+    repeating-linear-gradient(180deg, rgba(0,0,0,0.18) 0px, rgba(0,0,0,0.18) 1px, transparent 1px, transparent 2px),
+    radial-gradient(ellipse at 50% -30%, rgba(170,255,0,0.10), transparent 65%),
+    #050603;
+  box-shadow: inset 0 1px 4px rgba(0,0,0,0.75), inset 0 0 6px rgba(170,255,0,0.08);
+  pointer-events: none;
+}
+/* Pad REC façon bouton de platine (même famille que .radio-play-btn), LED
+   rouge — reste une pilule (pas un disque pur) pour laisser la place au
+   chrono "⏹ 1:23" affiché pendant l'enregistrement. */
+.radio-record-btn {
+  flex-shrink: 0;
+  min-width: 22px; height: 22px;
+  padding: 0 6px;
+  border-radius: 11px;
+  border: 1px solid #050505;
+  background:
+    radial-gradient(circle at 32% 26%, rgba(255,255,255,0.28), transparent 45%),
+    linear-gradient(165deg, #2a1616 0%, #1a0d0d 55%, #0e0707 100%);
+  color: #ff6666;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  box-shadow:
+    0 0 0 1.5px rgba(255,68,68,0.4),
+    inset 0 1px 1px rgba(255,255,255,0.2),
+    inset 0 -2px 3px rgba(0,0,0,0.5);
+  transition: transform 0.12s ease, box-shadow 0.2s;
+}
+.radio-record-btn:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    0 0 0 1.5px #ff4444,
+    0 0 10px rgba(255,68,68,0.5),
+    inset 0 1px 1px rgba(255,255,255,0.25),
+    inset 0 -2px 3px rgba(0,0,0,0.5);
+}
+.radio-record-btn:active { transform: translateY(1px) scale(0.95); }
+.radio-record-btn:disabled { cursor: default; opacity: 0.6; }
+.radio-record-btn[data-recording="true"] {
+  animation: recordPulse 1.3s ease-in-out infinite;
+}
+@keyframes recordPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255,68,68,0.4); }
+  50%      { box-shadow: 0 0 0 4px rgba(255,68,68,0); }
+}
+.radio-nowplaying-track {
+  display: inline-block;
+  white-space: nowrap;
+  padding-left: 100%;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  line-height: 22px;
+  color: var(--green);
+  text-shadow: 0 0 6px rgba(170,255,0,0.75), 0 0 1px rgba(170,255,0,0.9);
+  animation-name: radioMarquee;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+.radio-nowplaying-loading {
+  display: block;
+  text-align: center;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  line-height: 22px;
+  color: rgba(170,255,0,0.5);
+  text-shadow: 0 0 5px rgba(170,255,0,0.4);
+}
+@keyframes radioMarquee {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(-100%); }
 }
 
 .radio-dot {
@@ -386,32 +569,57 @@ body {
 }
 @keyframes radioPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.45; } }
 
+/* Pad play/stop façon bouton de platine : disque métal brossé + anneau LED
+   vert (même famille visuelle que .dj-pad du Mixer), plutôt qu'un simple
+   cercle à liseré fin. */
 .radio-play-btn {
-  width: 24px; height: 24px; flex-shrink: 0;
+  width: 26px; height: 26px; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
   border-radius: 50%;
-  background: transparent;
-  border: 1px solid rgba(170,255,0,0.4);
+  border: 1px solid #050505;
+  background:
+    radial-gradient(circle at 32% 26%, rgba(255,255,255,0.35), transparent 45%),
+    linear-gradient(165deg, #262a1e 0%, #171a10 55%, #0c0e08 100%);
   color: var(--green);
-  font-size: 11px; cursor: pointer;
-  transition: all 0.2s;
+  font-size: 10px; cursor: pointer;
+  box-shadow:
+    0 0 0 2px rgba(170,255,0,0.35),
+    inset 0 1px 1px rgba(255,255,255,0.25),
+    inset 0 -2px 3px rgba(0,0,0,0.5);
+  transition: transform 0.12s ease, box-shadow 0.2s;
 }
 .radio-play-btn:hover {
-  background: rgba(170,255,0,0.15);
-  box-shadow: 0 0 10px rgba(170,255,0,0.3);
+  transform: translateY(-1px);
+  box-shadow:
+    0 0 0 2px var(--green),
+    0 0 10px rgba(170,255,0,0.55),
+    inset 0 1px 1px rgba(255,255,255,0.3),
+    inset 0 -2px 3px rgba(0,0,0,0.5);
 }
+.radio-play-btn:active { transform: translateY(1px) scale(0.94); }
 
+/* Nom de la station : véritable écran LCD encastré (fond noir + scanline +
+   halo, police digitale, lueur phosphore verte) au lieu d'un simple texte
+   flottant — c'est l'afficheur principal "façon platine/CDJ" demandé. */
 .radio-select {
   max-width: 132px;
-  background: transparent;
-  border: none;
-  border-radius: 8px;
-  color: #ddd;
-  font-size: 12px; font-weight: 600;
-  letter-spacing: 0.3px;
+  background:
+    repeating-linear-gradient(180deg, rgba(0,0,0,0.18) 0px, rgba(0,0,0,0.18) 1px, transparent 1px, transparent 2px),
+    radial-gradient(ellipse at 50% -30%, rgba(170,255,0,0.10), transparent 65%),
+    #050603;
+  border: 1px solid rgba(170,255,0,0.22);
+  border-radius: 5px;
+  padding: 3px 7px;
+  color: var(--green);
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 11px; font-weight: 700;
+  letter-spacing: 0.4px;
+  line-height: 1.3;
+  text-shadow: 0 0 5px rgba(170,255,0,0.6);
   cursor: pointer;
   outline: none;
   text-overflow: ellipsis;
+  box-shadow: inset 0 1px 4px rgba(0,0,0,0.75), inset 0 0 6px rgba(170,255,0,0.06);
 }
 .radio-select option {
   background: #111; color: #ddd;
@@ -453,115 +661,197 @@ body {
   color: #f55; font-size: 12px; flex-shrink: 0;
 }
 
-.top-btn {
-  display: flex; align-items: center; gap: 6px;
-  padding: 8px 16px;
-  border-radius: 6px;
-  background: rgba(204,0,255,0.12);
-  border: 1px solid rgba(204,0,255,0.55);
-  color: var(--magenta);
-  font-size: 14px; font-weight: 700;
-  cursor: pointer; text-decoration: none;
-  letter-spacing: 0.5px;
-  transition: all 0.2s;
-  box-shadow: 0 0 10px rgba(204,0,255,0.1);
-}
-.top-btn:hover {
-  background: rgba(204,0,255,0.22);
-  box-shadow: 0 0 18px rgba(204,0,255,0.35);
-  border-color: var(--magenta);
-}
-
-/* RAVE.DJ — fond noir, accent jaune-citron façon site officiel */
-.top-btn.rave {
+/* ── BLOC FX (Paramètres / RAVE.DJ / SUNO / Google) ──
+   Retour utilisateur : regrouper ces 4 boutons hétéroclites en un vrai bloc
+   de pads 2x2, façon pads d'effets rétroéclairés d'une platine/contrôleur DJ
+   (carré biseauté sombre + LED de couleur de fonction au repos/survol),
+   plutôt qu'une rangée de boutons de formes/tailles différentes. */
+.fx-pad-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  grid-template-rows: repeat(2, 1fr);
+  gap: 4px;
+  padding: 5px;
+  border-radius: 8px;
   background: #050505;
-  border-color: rgba(232,255,0,0.6);
-  color: #e8ff00;
-  box-shadow: 0 0 10px rgba(232,255,0,0.12);
-}
-.top-btn.rave:hover {
-  background: #0d0d00;
-  box-shadow: 0 0 18px rgba(232,255,0,0.4);
-  border-color: #e8ff00;
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow: inset 0 1px 3px rgba(0,0,0,0.6), 0 1px 4px rgba(0,0,0,0.4);
 }
 
-/* SUNO — noir/blanc avec le dégradé jaune→rouge propre à leur identité visuelle */
-.top-btn.suno {
-  background: linear-gradient(100deg, rgba(255,196,0,0.18) 0%, rgba(255,80,0,0.18) 100%);
-  border-color: rgba(255,140,0,0.55);
-  color: #fff;
-  box-shadow: 0 0 10px rgba(255,120,0,0.12);
+.fx-pad {
+  --pad-color: var(--cyan);
+  position: relative;
+  width: 58px; height: 38px;
+  border-radius: 5px;
+  border: 1px solid #060606;
+  background:
+    radial-gradient(circle at 30% 22%, rgba(255,255,255,0.10), transparent 45%),
+    linear-gradient(165deg, #201f22 0%, #131214 55%, #0a0a0b 100%);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 1px;
+  cursor: pointer; text-decoration: none; box-sizing: border-box;
+  color: color-mix(in srgb, var(--pad-color) 55%, #666);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--pad-color) 35%, transparent),
+    inset 0 1px 0 rgba(255,255,255,0.08),
+    inset 0 -2px 4px rgba(0,0,0,0.5);
+  transition: transform 0.12s ease, box-shadow 0.2s, color 0.2s, background 0.2s;
 }
-.top-btn.suno:hover {
-  background: linear-gradient(100deg, rgba(255,196,0,0.32) 0%, rgba(255,80,0,0.32) 100%);
-  box-shadow: 0 0 18px rgba(255,120,0,0.35);
-  border-color: rgba(255,160,0,0.85);
-}
+.fx-pad-icon { font-size: 13px; line-height: 1; filter: drop-shadow(0 0 4px currentColor); }
+.fx-pad-label { font-size: 8px; font-weight: 800; letter-spacing: 0.5px; line-height: 1; white-space: nowrap; }
 
-/* LOGIN GOOGLE — fond noir, texte blanc, liseré dégradé reprenant
-   les 4 couleurs de la charte Google */
-.login-btn {
-  display: flex; align-items: center; gap: 8px;
-  padding: 9px 18px;
-  border-radius: 6px;
-  background: #000000;
-  border: 1px solid transparent;
-  border-bottom: 3px solid transparent;
-  border-image: linear-gradient(90deg, #4285F4 0%, #EA4335 33%, #FBBC05 66%, #34A853 100%) 1;
-  border-image-slice: 0 0 1 0;
-  color: #ffffff;
-  font-size: 14px; font-weight: 700;
-  cursor: pointer;
-  letter-spacing: 0.5px;
-  transition: all 0.2s;
-  /* le liseré blanc passe par box-shadow : border-image masque border-color
-     sur les bords dont le slice est à 0, donc impossible d'avoir les deux
-     via border seul */
-  box-shadow: 0 0 0 1px rgba(255,255,255,0.6), 0 1px 6px rgba(0,0,0,0.35);
+.fx-pad:hover {
+  color: var(--pad-color);
+  transform: translateY(-1px);
+  box-shadow:
+    0 0 0 1px var(--pad-color),
+    0 0 10px color-mix(in srgb, var(--pad-color) 70%, transparent),
+    inset 0 1px 0 rgba(255,255,255,0.12),
+    inset 0 -2px 4px rgba(0,0,0,0.5);
 }
-.login-btn:hover {
-  background: #1a1a1a;
-  box-shadow: 0 0 0 1px rgba(255,255,255,0.8), 0 2px 10px rgba(0,0,0,0.5);
-}
+.fx-pad:active { transform: translateY(1px) scale(0.96); }
 
-/* RAVE.DJ / SUNO / GOOGLE — même largeur, réduits pour tenir sur une seule
-   ligne avec le toggle Macheup/Clip Editor et le radio player. */
-.topbar-fixed-btn {
-  width: 88px;
-  padding: 6px 6px !important;
-  gap: 4px !important;
-  font-size: 11px !important;
-  justify-content: center;
-  white-space: nowrap;
-}
+/* Couleur de fonction de chaque pad — même logique que --pad-color sur
+   .dj-pad (Mixer), teintes reprises de l'identité visuelle de chaque service. */
+.fx-pad--settings { --pad-color: var(--cyan); }
+.fx-pad--rave     { --pad-color: #e8ff00; }
+.fx-pad--suno     { --pad-color: #ff9000; }
+.fx-pad--google   { --pad-color: #4285F4; }
 
-.top-icon-btn {
-  width: 36px; height: 36px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: transparent;
-  color: var(--muted2);
-  font-size: 17px;
-  cursor: pointer;
+/* Pad "profil" (connecté) : même gabarit que les autres pads, juste le
+   contenu (avatar + repli initiale) qui change. */
+.fx-pad--profile img,
+.fx-pad--profile .fx-pad-avatar-fallback {
+  width: 16px; height: 16px; border-radius: 50%; object-fit: cover;
+}
+.fx-pad--profile .fx-pad-avatar-fallback {
   display: flex; align-items: center; justify-content: center;
-  transition: all 0.2s;
+  background: rgba(66,133,244,0.25); color: #4285F4; font-size: 9px; font-weight: 800;
 }
-.top-icon-btn:hover { border-color: var(--green); color: var(--green); }
+
+/* ── Bulle d'info (tooltip) custom, façon platine DJ ──
+   Retour utilisateur : l'infobulle native du navigateur (rectangle blanc/bleu
+   imposé par l'OS via l'attribut title) est moche et ne peut pas être stylée
+   en CSS. On la remplace ici par une bulle maison via l'attribut data-tooltip
+   (pas title) : coins arrondis, fond aluminium brossé sombre (texture
+   diagonale, même recette que .dj-pad), liseré + lueur cyan, petite flèche —
+   cohérent avec le reste de l'interface. Utilisée pour l'instant sur les pads
+   MACHEUP/CLIP EDITOR/WHEEL/EXT. et SET/RAVE.DJ/SUNO/GOOGLE (TopBar.jsx). */
+[data-tooltip] { position: relative; }
+[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  /* En dessous du cadre/bouton (au lieu d'au-dessus) — retour utilisateur. */
+  top: calc(100% + 10px);
+  left: 50%;
+  transform: translateX(-50%) translateY(-4px);
+  width: max-content;
+  max-width: 220px;
+  padding: 7px 12px;
+  border-radius: 8px;
+  background:
+    repeating-linear-gradient(115deg, rgba(255,255,255,0.06) 0px, rgba(255,255,255,0.06) 1px, transparent 1px, transparent 3px),
+    radial-gradient(circle at 30% 20%, rgba(255,255,255,0.10), transparent 50%),
+    linear-gradient(165deg, #3c3c40 0%, #232326 45%, #131315 100%);
+  border: 1px solid rgba(0,234,255,0.4);
+  color: #f0f0f0;
+  font-family: 'Inter', sans-serif;
+  font-size: 11px; font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: 0.2px;
+  text-align: center;
+  white-space: normal;
+  box-shadow:
+    0 6px 18px rgba(0,0,0,0.55),
+    0 0 12px rgba(0,234,255,0.18),
+    inset 0 1px 0 rgba(255,255,255,0.14),
+    inset 0 -2px 4px rgba(0,0,0,0.4);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: 300;
+  transition: opacity 0.15s ease, transform 0.15s ease, visibility 0.15s;
+}
+[data-tooltip]::before {
+  content: '';
+  position: absolute;
+  /* Flèche pointant vers le haut (vers le bouton), en dessous du cadre. */
+  top: calc(100% + 5px);
+  left: 50%;
+  transform: translateX(-50%) translateY(-4px);
+  border: 5px solid transparent;
+  border-bottom-color: #232326;
+  filter: drop-shadow(0 -2px 2px rgba(0,0,0,0.4));
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: 300;
+  transition: opacity 0.15s ease, transform 0.15s ease, visibility 0.15s;
+}
+[data-tooltip]:hover::after, [data-tooltip]:focus-visible::after,
+[data-tooltip]:hover::before, [data-tooltip]:focus-visible::before {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0);
+}
 
 /* ── LAYOUT ── */
-.app { padding-bottom: 0; }
-
-.decks-row {
-  display: grid;
-  grid-template-columns: 1fr 280px 1fr;
-  gap: 16px;
-  padding: 16px;
-  align-items: stretch;
+.app {
+  padding-bottom: 0;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
-.decks-row > .deck,
-.decks-row > .mixer {
-  height: 100%;
+/* studio-grid : 2 lignes — ligne 1 = Deck A / Mixer / Deck B, ligne 2 = le
+   cadre "Choisi ton combo + Mes MacheUps" (pleine largeur). Le Mixer occupe
+   la colonne du milieu sur les 2 lignes (grid-row: 1 / 3) afin que son cadre
+   s'étire verticalement jusqu'au bord inférieur du cadre combo, exactement
+   comme une console de mixage qui descend jusqu'à la table entre 2 platines. */
+.studio-grid {
+  display: grid;
+  grid-template-columns: 1fr 350px 1fr;
+  grid-template-rows: auto auto;
+  gap: 12px;
+  padding: 10px 12px;
+  align-items: stretch;
+  /* min-height:0 indispensable : sans ça, un enfant flex (ici dans .app) ne
+     peut jamais rétrécir sous la hauteur naturelle de son contenu, ce qui
+     poussait le Footer (et notamment sa dernière bande badges/liens) hors de
+     la zone visible — .app étant en overflow:hidden, elle disparaissait tout
+     simplement au lieu d'être accessible en scroll. overflow-y:auto en
+     filet de sécurité : si le contenu est quand même trop haut, c'est cette
+     zone qui défile, jamais le Footer qui doit rester fixé en bas. */
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.studio-grid > .deck-cyan    { grid-column: 1; grid-row: 1; height: 100%; }
+.studio-grid > .deck-magenta { grid-column: 3; grid-row: 1; height: 100%; }
+
+.studio-grid > .mixer {
+  grid-column: 2;
+  grid-row: 1 / 3;
+  z-index: 2;
+}
+
+/* "Sélect ton combo" aligné exactement sous le Deck A (même colonne 1fr),
+   "Mes MacheUps" aligné sous le Deck B (même colonne 1fr) — au lieu d'un
+   cadre commun pleine largeur réparti en flex (ancien .combo-frame /
+   .combo-row-wrap), qui ne correspondait pas aux largeurs réelles des Decks.
+   Chacun est un enfant direct de la grille, avec son propre cadre net (coins
+   cyan/vert déjà définis sur .combo-panel/.mashups-bar), comme les Decks. */
+.studio-grid > .combo-panel {
+  grid-column: 1;
+  grid-row: 2;
+  z-index: 1;
+}
+.studio-grid > .mashups-bar {
+  grid-column: 3;
+  grid-row: 2;
+  z-index: 1;
 }
 
 /* ── DECK ── */
@@ -600,6 +890,46 @@ body {
     linear-gradient(160deg, rgba(204,0,255,0.05) 0%, var(--surface) 45%, #0a0a0a 100%);
 }
 
+.deck-yellow {
+  border: 2px solid rgba(255,204,0,0.55);
+  box-shadow:
+    0 0 0 1px rgba(255,204,0,0.12),
+    0 0 32px rgba(255,204,0,0.22),
+    0 0 80px rgba(255,204,0,0.08),
+    inset 0 0 40px rgba(255,204,0,0.05);
+  background:
+    radial-gradient(circle at 12% -6%, rgba(255,204,0,0.16) 0%, transparent 42%),
+    radial-gradient(circle at 105% 110%, rgba(255,204,0,0.08) 0%, transparent 50%),
+    repeating-linear-gradient(135deg, rgba(255,255,255,0.018) 0px, rgba(255,255,255,0.018) 1px, transparent 1px, transparent 9px),
+    linear-gradient(160deg, rgba(255,204,0,0.05) 0%, var(--surface) 45%, #0a0a0a 100%);
+}
+.deck-teal {
+  border: 2px solid rgba(0,255,179,0.55);
+  box-shadow:
+    0 0 0 1px rgba(0,255,179,0.12),
+    0 0 32px rgba(0,255,179,0.22),
+    0 0 80px rgba(0,255,179,0.08),
+    inset 0 0 40px rgba(0,255,179,0.05);
+  background:
+    radial-gradient(circle at 12% -6%, rgba(0,255,179,0.16) 0%, transparent 42%),
+    radial-gradient(circle at 105% 110%, rgba(0,255,179,0.08) 0%, transparent 50%),
+    repeating-linear-gradient(135deg, rgba(255,255,255,0.018) 0px, rgba(255,255,255,0.018) 1px, transparent 1px, transparent 9px),
+    linear-gradient(160deg, rgba(0,255,179,0.05) 0%, var(--surface) 45%, #0a0a0a 100%);
+}
+.deck-orange {
+  border: 2px solid rgba(255,106,0,0.55);
+  box-shadow:
+    0 0 0 1px rgba(255,106,0,0.12),
+    0 0 32px rgba(255,106,0,0.22),
+    0 0 80px rgba(255,106,0,0.08),
+    inset 0 0 40px rgba(255,106,0,0.05);
+  background:
+    radial-gradient(circle at 12% -6%, rgba(255,106,0,0.16) 0%, transparent 42%),
+    radial-gradient(circle at 105% 110%, rgba(255,106,0,0.08) 0%, transparent 50%),
+    repeating-linear-gradient(135deg, rgba(255,255,255,0.018) 0px, rgba(255,255,255,0.018) 1px, transparent 1px, transparent 9px),
+    linear-gradient(160deg, rgba(255,106,0,0.05) 0%, var(--surface) 45%, #0a0a0a 100%);
+}
+
 /* Corner accent lines */
 .deck::before, .deck::after {
   content: '';
@@ -610,10 +940,13 @@ body {
 .deck-cyan::before  { top: -2px; left: -2px; width: 28px; height: 28px; border-top: 3px solid var(--cyan); border-left: 3px solid var(--cyan); border-radius: 14px 0 0 0; }
 .deck-cyan::after   { bottom: -2px; right: -2px; width: 28px; height: 28px; border-bottom: 3px solid var(--cyan); border-right: 3px solid var(--cyan); border-radius: 0 0 14px 0; }
 .deck-magenta::before { top: -2px; left: -2px; width: 28px; height: 28px; border-top: 3px solid var(--magenta); border-left: 3px solid var(--magenta); border-radius: 14px 0 0 0; }
+.deck-yellow::after   { bottom: -2px; right: -2px; width: 28px; height: 28px; border-bottom: 3px solid var(--yellow); border-right: 3px solid var(--yellow); border-radius: 0 0 14px 0; }
+.deck-teal::after   { bottom: -2px; right: -2px; width: 28px; height: 28px; border-bottom: 3px solid var(--teal); border-right: 3px solid var(--teal); border-radius: 0 0 14px 0; }
+.deck-orange::after   { bottom: -2px; right: -2px; width: 28px; height: 28px; border-bottom: 3px solid var(--orange); border-right: 3px solid var(--orange); border-radius: 0 0 14px 0; }
 .deck-magenta::after  { bottom: -2px; right: -2px; width: 28px; height: 28px; border-bottom: 3px solid var(--magenta); border-right: 3px solid var(--magenta); border-radius: 0 0 14px 0; }
 
 .deck-inner {
-  padding: 16px; border-radius: 12px; overflow: hidden;
+  padding: 12px; border-radius: 12px; overflow: hidden;
   display: flex; flex-direction: column;
   height: 100%;
 }
@@ -622,7 +955,7 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 14px;
+  margin-bottom: 2px;
 }
 
 .deck-label {
@@ -634,12 +967,18 @@ body {
 }
 .deck-cyan    .deck-label { color: var(--cyan); text-shadow: 0 0 14px rgba(0,234,255,0.45); }
 .deck-magenta .deck-label { color: var(--magenta); text-shadow: 0 0 14px rgba(204,0,255,0.45); }
+.deck-yellow    .deck-label { color: var(--yellow); text-shadow: 0 0 14px rgba(255,204,0,0.45); }
+.deck-teal    .deck-label { color: var(--teal); text-shadow: 0 0 14px rgba(0,255,179,0.45); }
+.deck-orange    .deck-label { color: var(--orange); text-shadow: 0 0 14px rgba(255,106,0,0.45); }
 
 .deck-dot {
   width: 9px; height: 9px; border-radius: 50%;
 }
 .deck-cyan .deck-dot  { background: var(--cyan); box-shadow: 0 0 8px var(--cyan); }
 .deck-magenta .deck-dot { background: var(--magenta); box-shadow: 0 0 8px var(--magenta); }
+.deck-yellow .deck-dot  { background: var(--yellow); box-shadow: 0 0 8px var(--yellow); }
+.deck-teal .deck-dot  { background: var(--teal); box-shadow: 0 0 8px var(--teal); }
+.deck-orange .deck-dot  { background: var(--orange); box-shadow: 0 0 8px var(--orange); }
 
 .deck-header-right { display: flex; align-items: center; gap: 8px; }
 
@@ -661,15 +1000,18 @@ body {
 }
 .deck-cyan .deck-letter    { color: var(--cyan); }
 .deck-magenta .deck-letter { color: var(--magenta); }
+.deck-yellow .deck-letter    { color: var(--yellow); }
+.deck-teal .deck-letter    { color: var(--teal); }
+.deck-orange .deck-letter    { color: var(--orange); }
 
 /* Search */
 .search-label {
   font-size: 11px; font-weight: 700;
   letter-spacing: 2px; color: var(--muted2);
-  text-transform: uppercase; margin-bottom: 6px;
+  text-transform: uppercase; margin-bottom: 1px;
 }
 
-.search-row { display: flex; gap: 6px; margin-bottom: 10px; }
+.search-row { display: flex; gap: 6px; margin-bottom: 2px; }
 
 .search-copy-btn {
   width: 32px; height: 36px;
@@ -691,6 +1033,9 @@ body {
 .search-row input::placeholder { color: var(--muted); }
 .deck-cyan    .search-row input:focus { outline: none; border-color: var(--cyan-border); }
 .deck-magenta .search-row input:focus { outline: none; border-color: var(--magenta-border); }
+.deck-yellow    .search-row input:focus { outline: none; border-color: var(--yellow-border); }
+.deck-teal    .search-row input:focus { outline: none; border-color: var(--teal-border); }
+.deck-orange    .search-row input:focus { outline: none; border-color: var(--orange-border); }
 
 .charge-btn {
   display: flex; align-items: center; gap: 6px;
@@ -736,6 +1081,9 @@ body {
 /* Bezel-style outer frame */
 .deck-cyan    .waveform-area { border: 2px solid rgba(0,234,255,0.35); box-shadow: 0 0 20px rgba(0,234,255,0.15) inset, 0 0 12px rgba(0,234,255,0.18), 0 4px 24px rgba(0,0,0,0.6); }
 .deck-magenta .waveform-area { border: 2px solid rgba(204,0,255,0.35); box-shadow: 0 0 20px rgba(204,0,255,0.15) inset, 0 0 12px rgba(204,0,255,0.18), 0 4px 24px rgba(0,0,0,0.6); }
+.deck-yellow    .waveform-area { border: 2px solid rgba(255,204,0,0.35); box-shadow: 0 0 20px rgba(255,204,0,0.15) inset, 0 0 12px rgba(255,204,0,0.18), 0 4px 24px rgba(0,0,0,0.6); }
+.deck-teal    .waveform-area { border: 2px solid rgba(0,255,179,0.35); box-shadow: 0 0 20px rgba(0,255,179,0.15) inset, 0 0 12px rgba(0,255,179,0.18), 0 4px 24px rgba(0,0,0,0.6); }
+.deck-orange    .waveform-area { border: 2px solid rgba(255,106,0,0.35); box-shadow: 0 0 20px rgba(255,106,0,0.15) inset, 0 0 12px rgba(255,106,0,0.18), 0 4px 24px rgba(0,0,0,0.6); }
 
 /* Glass shimmer overlay at top */
 .waveform-area::before {
@@ -772,6 +1120,9 @@ body {
 }
 .deck-cyan    .waveform-label { color: var(--cyan); opacity: 0.12; }
 .deck-magenta .waveform-label { color: var(--magenta); opacity: 0.12; }
+.deck-yellow    .waveform-label { color: var(--yellow); opacity: 0.12; }
+.deck-teal    .waveform-label { color: var(--teal); opacity: 0.12; }
+.deck-orange    .waveform-label { color: var(--orange); opacity: 0.12; }
 
 .waveform-bars {
   position: absolute; inset: 0;
@@ -780,6 +1131,9 @@ body {
 .waveform-bars span { flex: 1; border-radius: 2px; animation: wave 1.2s ease-in-out infinite; }
 .deck-cyan    .waveform-bars span { background: var(--cyan); }
 .deck-magenta .waveform-bars span { background: var(--magenta); }
+.deck-yellow    .waveform-bars span { background: var(--yellow); }
+.deck-teal    .waveform-bars span { background: var(--teal); }
+.deck-orange    .waveform-bars span { background: var(--orange); }
 
 @keyframes wave { 0%,100%{transform:scaleY(0.3)} 50%{transform:scaleY(1)} }
 
@@ -795,6 +1149,9 @@ body {
 }
 .deck-cyan    .progress-bar::-webkit-slider-thumb { background: var(--cyan); }
 .deck-magenta .progress-bar::-webkit-slider-thumb { background: var(--magenta); }
+.deck-yellow    .progress-bar::-webkit-slider-thumb { background: var(--yellow); }
+.deck-teal    .progress-bar::-webkit-slider-thumb { background: var(--teal); }
+.deck-orange    .progress-bar::-webkit-slider-thumb { background: var(--orange); }
 .progress-bar::-webkit-slider-thumb {
   -webkit-appearance: none;
   width: 12px; height: 12px; border-radius: 50%; cursor: pointer;
@@ -823,6 +1180,9 @@ body {
 }
 .deck-cyan    .vol-slider::-webkit-slider-thumb { background: var(--cyan); }
 .deck-magenta .vol-slider::-webkit-slider-thumb { background: var(--magenta); }
+.deck-yellow    .vol-slider::-webkit-slider-thumb { background: var(--yellow); }
+.deck-teal    .vol-slider::-webkit-slider-thumb { background: var(--teal); }
+.deck-orange    .vol-slider::-webkit-slider-thumb { background: var(--orange); }
 .vol-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
   width: 14px; height: 14px; border-radius: 50%; cursor: pointer;
@@ -830,12 +1190,12 @@ body {
 
 /* Play btn */
 .play-btn {
-  width: 100%; padding: 10px;
+  width: 100%; padding: 6px;
   border-radius: 6px; background: transparent;
   border: 1px solid rgba(255,255,255,0.12);
   color: #bbb;
-  font-size: 13px; font-weight: 700; letter-spacing: 2px;
-  cursor: pointer; margin-bottom: 8px; transition: 0.2s;
+  font-size: 12px; font-weight: 700; letter-spacing: 2px;
+  cursor: pointer; margin-bottom: 6px; transition: 0.2s;
 }
 .deck-cyan .play-btn:hover {
   border-color: var(--cyan-border); color: var(--cyan);
@@ -848,22 +1208,51 @@ body {
   box-shadow: 0 0 12px rgba(204,0,255,0.15);
 }
 
+/* Cadre "Outils" sous le lecteur YouTube/visualiseur — regroupe Lyrics,
+   Prompt Suno, Shazam et le bouton d'analyse (affichage + relance), au lieu
+   de les avoir éparpillés en bas du deck. */
+.deck-tools-frame {
+  margin-top: 6px;
+  padding: 6px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.02);
+  border: 1px solid rgba(255,255,255,0.08);
+}
+.deck-cyan    .deck-tools-frame { border-color: rgba(0,234,255,0.18); }
+.deck-magenta .deck-tools-frame { border-color: rgba(204,0,255,0.18); }
+.deck-yellow    .deck-tools-frame { border-color: rgba(255,204,0,0.18); }
+.deck-teal    .deck-tools-frame { border-color: rgba(0,255,179,0.18); }
+.deck-orange    .deck-tools-frame { border-color: rgba(255,106,0,0.18); }
+.deck-tools-label {
+  font-size: 10px; font-weight: 700;
+  letter-spacing: 2px; color: var(--muted2);
+  text-transform: uppercase; margin-bottom: 5px;
+}
+
 /* Footer */
 .deck-footer { display: flex; gap: 6px; }
 .ghost-btn {
-  flex: 1; padding: 7px;
+  flex: 1; padding: 4px;
   border-radius: 6px; background: transparent;
   border: 1px solid rgba(255,255,255,0.1);
   color: #999; font-size: 12px;
   font-weight: 600; letter-spacing: 0.5px;
   cursor: pointer; transition: 0.2s;
+  /* Retour utilisateur : les 3 boutons (Lyrics/Prompt Suno/Shazam) doivent
+     toujours rester sur une seule ligne — avec flex:1 (flex-basis 0%) seul,
+     le texte pouvait passer à la ligne quand le cadre du deck était étroit.
+     white-space:nowrap force une seule ligne ; overflow/ellipsis évite un
+     débordement disgracieux si jamais ça ne tient toujours pas. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .ghost-btn:hover { color: white; border-color: rgba(255,255,255,0.3); background: rgba(255,255,255,0.04); }
 .ghost-btn:disabled { opacity: 0.25; cursor: not-allowed; }
 
 /* ── MIXER ── */
 .mixer {
-  padding: 16px;
+  padding: 12px;
   border-radius: 14px;
   background:
     radial-gradient(circle at 0% 0%, rgba(0,234,255,0.14) 0%, transparent 48%),
@@ -871,7 +1260,7 @@ body {
     repeating-linear-gradient(135deg, rgba(255,255,255,0.018) 0px, rgba(255,255,255,0.018) 1px, transparent 1px, transparent 9px),
     linear-gradient(160deg, rgba(0,234,255,0.04) 0%, var(--surface) 45%, rgba(204,0,255,0.04) 100%);
   border: 2px solid rgba(255,255,255,0.16);
-  display: flex; flex-direction: column; gap: 12px;
+  display: flex; flex-direction: column; gap: 9px;
   position: relative;
   overflow: visible;
   box-shadow:
@@ -907,32 +1296,100 @@ body {
   text-align: center; margin-top: 4px;
 }
 
+/* ── DJ ASSIST — pad d'effet façon table de mixage DJ ──
+   Ouvre la roue de suggestions (même moteur que Mashup Wheel) pour trouver un
+   clip compatible avec le Deck A, injecté directement dans le Deck B. Pad
+   rectangulaire biseauté sombre (même famille que .dj-pad), dégradé
+   cyan→magenta qui relie visuellement Deck A à Deck B, avec une pulsation
+   douce ("effet" actif) pour bien signaler que c'est une action spéciale.
+   Placé à gauche du titre MIXER (position absolute, symétrique du toggle
+   ON/OFF à droite). */
+.dj-assist-btn {
+  position: absolute; left: 0; top: 50%;
+  display: flex; align-items: center; gap: 4px;
+  padding: 5px 8px;
+  border-radius: 7px;
+  border: 1px solid rgba(0,234,255,0.4);
+  background:
+    radial-gradient(circle at 30% 20%, rgba(255,255,255,0.14), transparent 50%),
+    linear-gradient(100deg, rgba(0,234,255,0.16) 0%, rgba(204,0,255,0.16) 100%),
+    linear-gradient(165deg, #201f22 0%, #131214 60%, #0a0a0b 100%);
+  color: #eee;
+  font-family: 'Orbitron', sans-serif;
+  font-size: 10px; font-weight: 800;
+  letter-spacing: 0.6px;
+  white-space: nowrap;
+  cursor: pointer;
+  transform: translateY(-50%);
+  box-shadow:
+    0 0 0 1px rgba(0,234,255,0.25),
+    0 0 10px rgba(204,0,255,0.18),
+    inset 0 1px 0 rgba(255,255,255,0.12),
+    inset 0 -2px 4px rgba(0,0,0,0.5);
+  animation: djAssistPulse 2.6s ease-in-out infinite;
+  transition: transform 0.12s ease, box-shadow 0.2s, filter 0.2s;
+}
+.dj-assist-btn:hover {
+  transform: translateY(-50%) scale(1.05);
+  box-shadow:
+    0 0 0 1.5px var(--cyan),
+    0 0 16px rgba(204,0,255,0.4),
+    inset 0 1px 0 rgba(255,255,255,0.18),
+    inset 0 -2px 4px rgba(0,0,0,0.5);
+}
+.dj-assist-btn:active { transform: translateY(-50%) scale(0.97); }
+/* Terne tant que le Deck A n'est pas prêt (cf. data-ready dans Mixer.jsx) —
+   PAS d'attribut "disabled" : le bouton reste cliquable pour expliquer quoi
+   faire au lieu de rester silencieusement inerte (retour utilisateur). */
+.dj-assist-btn[data-ready="false"] {
+  opacity: 0.45; animation: none; filter: grayscale(0.5);
+}
+.dj-assist-btn[data-ready="false"]:hover {
+  transform: translateY(-50%) scale(1.02);
+  box-shadow:
+    0 0 0 1px rgba(0,234,255,0.25),
+    0 0 10px rgba(204,0,255,0.18),
+    inset 0 1px 0 rgba(255,255,255,0.12),
+    inset 0 -2px 4px rgba(0,0,0,0.5);
+}
+@keyframes djAssistPulse {
+  0%, 100% { box-shadow: 0 0 0 1px rgba(0,234,255,0.25), 0 0 10px rgba(204,0,255,0.18), inset 0 1px 0 rgba(255,255,255,0.12), inset 0 -2px 4px rgba(0,0,0,0.5); }
+  50%      { box-shadow: 0 0 0 1px rgba(204,0,255,0.4), 0 0 16px rgba(0,234,255,0.3), inset 0 1px 0 rgba(255,255,255,0.16), inset 0 -2px 4px rgba(0,0,0,0.5); }
+}
+
 .mixer-controls { display: flex; justify-content: center; align-items: center; gap: 14px; padding: 6px 0 10px; }
 
-/* Pads DJ — façon vrais boutons de table de mixage pro : disque métal
-   brossé (anneau biseauté noir + texture brossée diagonale + reflet), icône
-   "gravée" gris foncé au repos qui s'allume comme un témoin LED de la
-   couleur de fonction au survol/activation, plutôt que le néon plein temps
-   d'avant. */
+/* Pads DJ — façon vraies touches de pad de platine/contrôleur pro (Pioneer/
+   Denon) plutôt que des boutons ronds façon disque métal : carré à coins
+   arrondis, même matière brossée + reflet, icône "gravée" gris foncé au repos
+   qui s'allume comme un témoin LED de la couleur de fonction au survol/
+   activation. Retour utilisateur explicite : "les boutons ronds les mettre
+   en forme carré avec des coins arrondis (comme des touches de paddle de
+   platine dj), avec effets lumineux". */
 .dj-pad {
   --pad-color: var(--cyan);
   position: relative;
-  width: 46px; height: 46px; border-radius: 50%;
+  width: 46px; height: 46px; border-radius: 12px;
   border: 1px solid #050505;
+  /* Fond "carbone" (retour utilisateur : plus gris foncé, effet carbone
+     plutôt que le métal brossé clair d'avant) : tissage croisé façon fibre de
+     carbone (2 hachures diagonales opposées, tons quasi noirs/gris très
+     sombre) + un très léger reflet, sur une base en dégradé sombre. */
   background:
-    repeating-linear-gradient(115deg, rgba(255,255,255,0.12) 0px, rgba(255,255,255,0.12) 1px, transparent 1px, transparent 3px),
-    radial-gradient(circle at 32% 28%, rgba(255,255,255,0.55), transparent 40%),
-    linear-gradient(165deg, #cfcfd4 0%, #a3a3aa 22%, #6d6d74 50%, #45454a 75%, #2a2a2e 100%);
-  color: #2c2c2c;
+    repeating-linear-gradient(45deg, rgba(0,0,0,0.6) 0px, rgba(0,0,0,0.6) 2px, rgba(70,70,74,0.5) 2px, rgba(70,70,74,0.5) 4px),
+    repeating-linear-gradient(-45deg, rgba(0,0,0,0.6) 0px, rgba(0,0,0,0.6) 2px, rgba(70,70,74,0.5) 2px, rgba(70,70,74,0.5) 4px),
+    radial-gradient(circle at 32% 28%, rgba(255,255,255,0.12), transparent 45%),
+    linear-gradient(165deg, #3a3a3d 0%, #26262a 28%, #17171a 58%, #0a0a0b 85%, #030303 100%);
+  color: #5a5a5a;
   font-size: 14px; cursor: pointer;
   display: flex; align-items: center; justify-content: center;
   box-shadow:
     0 0 0 3px #0c0c0c,
     0 0 0 4px color-mix(in srgb, var(--pad-color) 30%, transparent),
     0 2px 5px rgba(0,0,0,0.65),
-    inset 0 1px 1px rgba(255,255,255,0.5),
-    inset 0 -3px 5px rgba(0,0,0,0.35);
-  transition: transform 0.12s ease, box-shadow 0.2s, color 0.2s, background 0.2s;
+    inset 0 1px 1px rgba(255,255,255,0.15),
+    inset 0 -3px 5px rgba(0,0,0,0.5);
+  transition: transform 0.12s ease, box-shadow 0.2s, color 0.2s, background 0.2s, border-radius 0.2s;
 }
 /* display:block (au lieu de l'inline par défaut des <svg>) pour que le
    centrage flex du bouton parent (.dj-pad) s'applique sur la boîte exacte de
@@ -953,8 +1410,9 @@ body {
 .dj-pad:active {
   transform: translateY(1px) scale(0.95);
   background:
-    repeating-linear-gradient(115deg, rgba(255,255,255,0.08) 0px, rgba(255,255,255,0.08) 1px, transparent 1px, transparent 3px),
-    linear-gradient(165deg, #9a9aa0 0%, #75757c 30%, #4a4a50 65%, #2a2a2e 100%);
+    repeating-linear-gradient(45deg, rgba(0,0,0,0.65) 0px, rgba(0,0,0,0.65) 2px, rgba(50,50,54,0.5) 2px, rgba(50,50,54,0.5) 4px),
+    repeating-linear-gradient(-45deg, rgba(0,0,0,0.65) 0px, rgba(0,0,0,0.65) 2px, rgba(50,50,54,0.5) 2px, rgba(50,50,54,0.5) 4px),
+    linear-gradient(165deg, #222225 0%, #17171a 35%, #0c0c0d 70%, #030303 100%);
   box-shadow:
     0 0 0 3px #0c0c0c,
     0 0 0 4px color-mix(in srgb, var(--pad-color) 80%, transparent),
@@ -991,25 +1449,61 @@ body {
   background: var(--surface2); border: 1px solid var(--border); border-radius: 10px;
 }
 .master-vol-icon { font-size: 14px; flex-shrink: 0; }
-.master-vol-slider {
-  -webkit-appearance: none; flex: 1;
-  height: 4px; border-radius: 2px;
-  background: linear-gradient(90deg, var(--cyan), var(--magenta));
-  cursor: pointer;
+
+/* Rainure du fader master — même esprit que .vol-track-wrap (Decks) mais à
+   l'horizontale : creux sombre biseauté + remplissage néon jusqu'à la valeur
+   courante + repères verticaux, façon vrai fader de mixette DJ plutôt qu'une
+   barre <input> nue. */
+.master-vol-track-wrap {
+  position: relative; flex: 1; height: 10px; border-radius: 5px;
+  background: linear-gradient(180deg, #050505, #161616);
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow: inset 0 1px 3px rgba(0,0,0,0.8);
+  /* PAS d'overflow:hidden ici (contrairement au 1er réflexe) : le capuchon
+     du fader (::-webkit-slider-thumb, 22px de haut) doit dépasser la rainure
+     de 10px comme un vrai fader physique — un overflow:hidden sur ce
+     conteneur le tronquerait au ras de la rainure. */
+  border-radius: 5px;
 }
+.master-vol-track-fill {
+  position: absolute; top: 0; left: 0; bottom: 0; border-radius: 4px;
+  background: linear-gradient(90deg, var(--cyan), var(--magenta));
+  box-shadow: 0 0 10px rgba(0,234,255,0.5), 0 0 10px rgba(204,0,255,0.35);
+  transition: width 0.1s linear;
+}
+.master-vol-ticks {
+  position: absolute; inset: 0;
+  display: flex; justify-content: space-between; align-items: stretch;
+  padding: 0 6px; pointer-events: none;
+}
+.master-vol-ticks span { position: relative; width: 1px; background: rgba(0,0,0,0.35); }
+.master-vol-slider {
+  -webkit-appearance: none; position: absolute; inset: 0;
+  width: 100%; height: 100%; margin: 0;
+  background: transparent; cursor: pointer;
+}
+.master-vol-slider::-webkit-slider-runnable-track { background: transparent; }
+.master-vol-slider::-moz-range-track { background: transparent; }
+/* Capuchon de fader — rectangle biseauté à coins arrondis (comme un vrai
+   fader de mixette), pas un simple rond, avec liseré lumineux. */
 .master-vol-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 14px; height: 14px; border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 0 8px rgba(255,255,255,0.6), 0 2px 3px rgba(0,0,0,0.6);
-  cursor: pointer;
+  width: 10px; height: 22px; border-radius: 4px;
+  margin-top: 0;
+  background: linear-gradient(180deg, #f5f5f5, #c8c8cc 45%, #8a8a90 100%);
+  border: 1px solid #000;
+  box-shadow: 0 0 9px rgba(255,255,255,0.7), 0 2px 3px rgba(0,0,0,0.7), inset 0 1px 0 rgba(255,255,255,0.6);
+  cursor: grab;
 }
 .master-vol-slider::-moz-range-thumb {
-  width: 14px; height: 14px; border-radius: 50%;
-  background: #fff; border: none;
-  box-shadow: 0 0 8px rgba(255,255,255,0.6), 0 2px 3px rgba(0,0,0,0.6);
-  cursor: pointer;
+  width: 10px; height: 22px; border-radius: 4px;
+  background: linear-gradient(180deg, #f5f5f5, #c8c8cc 45%, #8a8a90 100%);
+  border: 1px solid #000;
+  box-shadow: 0 0 9px rgba(255,255,255,0.7), 0 2px 3px rgba(0,0,0,0.7), inset 0 1px 0 rgba(255,255,255,0.6);
+  cursor: grab;
 }
+.master-vol-slider::-webkit-slider-thumb:active,
+.master-vol-slider::-moz-range-thumb:active { cursor: grabbing; }
 .master-vol-pct {
   font-size: 11px; color: var(--muted2); font-weight: 700;
   width: 34px; text-align: right; flex-shrink: 0;
@@ -1174,20 +1668,102 @@ body {
 
 .mixer-desc { font-size: 11px; color: var(--muted); line-height: 1.6; }
 
-/* ── MASHUPS BAR ── */
-.mashups-bar {
+/* ── COMBO PANEL ("Sélect ton combo", aligné sous le Deck A) ── */
+/* Cadre individuel façon "deck" (bordure pleine + coins accentués cyan) —
+   ancien cadre commun .combo-frame retiré : ComboPanel et MashupsBar sont
+   désormais chacun alignés sur la colonne de leur Deck respectif (cf. règles
+   .studio-grid > .combo-panel / .mashups-bar plus haut) plutôt que répartis
+   en flex dans une même ligne pleine largeur. */
+.combo-panel {
+  position: relative;
   background: rgba(8,8,8,0.92);
-  padding: 12px 16px;
-  border-top: 1px solid var(--border);
+  padding: 9px 14px;
+  border: 1px solid rgba(0,234,255,0.25);
+  border-radius: 10px;
+  box-shadow: 0 0 16px rgba(0,234,255,0.06);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: visible;
 }
+.combo-panel::before, .combo-panel::after {
+  content: '';
+  position: absolute;
+  pointer-events: none;
+  z-index: 1;
+}
+.combo-panel::before { top: -2px; left: -2px; width: 20px; height: 20px; border-top: 3px solid var(--cyan); border-left: 3px solid var(--cyan); border-radius: 10px 0 0 0; }
+.combo-panel::after  { bottom: -2px; right: -2px; width: 20px; height: 20px; border-bottom: 3px solid var(--cyan); border-right: 3px solid var(--cyan); border-radius: 0 0 10px 0; }
+.combo-panel-header {
+  display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;
+}
+/* Même habillage typographique que .deck-label/.mixer-title (Orbitron, gras,
+   majuscules, espacement, lueur colorée) — retour utilisateur : les titres
+   "Sélect ton combo"/"Mes MacheUps" doivent avoir le même aspect graphique
+   que Mixer/Deck A/Deck B, pas la police par défaut du corps de page. */
+.combo-panel-title {
+  display: flex; align-items: center; gap: 8px;
+  font-family: 'Orbitron', sans-serif;
+  font-size: 14px; font-weight: 900;
+  letter-spacing: 2px; text-transform: uppercase;
+  color: var(--cyan); text-shadow: 0 0 14px rgba(0,234,255,0.45);
+}
+.combo-panel-title .bar-icon { color: var(--cyan); }
+
+/* Titre "COMBO" vertical — remplace l'ancien en-tête horizontal "🔀 Sélect
+   ton combo", placé à gauche des 4 cadres de combos générés plutôt qu'au-
+   dessus. Même habillage typographique (Orbitron, gras, majuscules, lueur
+   cyan) que .combo-panel-title, simplement pivoté à la verticale :
+   writing-mode fait lire le texte de haut en bas, rotate(180deg) le fait
+   ensuite se lire de bas en haut (convention habituelle pour un libellé
+   latéral, plus naturel à lire une fois la tête penchée). */
+.combo-panel-title-vertical {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  flex-shrink: 0;
+  align-self: stretch;
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'Orbitron', sans-serif;
+  font-size: 13px; font-weight: 900;
+  letter-spacing: 3px; text-transform: uppercase;
+  color: var(--cyan); text-shadow: 0 0 14px rgba(0,234,255,0.45);
+  padding: 4px 0;
+}
+
+/* ── MASHUPS BAR ── */
+/* Même traitement, cadre net + coins accentués vert (couleur déjà associée
+   à "Mes MacheUps" via .mashups-bar-title .bar-icon). */
+.mashups-bar {
+  position: relative;
+  background: rgba(8,8,8,0.92);
+  padding: 9px 14px;
+  border: 1px solid rgba(170,255,0,0.25);
+  border-radius: 10px;
+  box-shadow: 0 0 16px rgba(170,255,0,0.06);
+  overflow: visible;
+}
+.mashups-bar::before, .mashups-bar::after {
+  content: '';
+  position: absolute;
+  pointer-events: none;
+  z-index: 1;
+}
+.mashups-bar::before { top: -2px; left: -2px; width: 20px; height: 20px; border-top: 3px solid var(--green); border-left: 3px solid var(--green); border-radius: 10px 0 0 0; }
+.mashups-bar::after  { bottom: -2px; right: -2px; width: 20px; height: 20px; border-bottom: 3px solid var(--green); border-right: 3px solid var(--green); border-radius: 0 0 10px 0; }
 
 .mashups-bar-header {
-  display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;
+  display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;
 }
 
+/* Même habillage typographique que .deck-label/.mixer-title (Orbitron, gras,
+   majuscules, espacement, lueur colorée) — même raison que .combo-panel-title
+   ci-dessus, teinte verte (couleur déjà associée à ce cadre). */
 .mashups-bar-title {
   display: flex; align-items: center; gap: 8px;
-  font-size: 14px; font-weight: 700;
+  font-family: 'Orbitron', sans-serif;
+  font-size: 14px; font-weight: 900;
+  letter-spacing: 2px; text-transform: uppercase;
+  color: var(--green); text-shadow: 0 0 14px rgba(170,255,0,0.45);
 }
 
 .mashups-bar-title .bar-icon { color: var(--green); }
@@ -1200,7 +1776,7 @@ body {
 
 .refresh-btn {
   display: flex; align-items: center; gap: 6px;
-  padding: 6px 12px; border-radius: 6px;
+  padding: 4px 10px; border-radius: 6px;
   border: 1px solid var(--border); background: transparent;
   color: var(--muted2); font-size: 12px; font-weight: 700;
   letter-spacing: 1px; cursor: pointer; transition: 0.2s;
@@ -1211,10 +1787,10 @@ body {
 .mashups-list::-webkit-scrollbar { height: 3px; }
 .mashups-list::-webkit-scrollbar-thumb { background: #222; border-radius: 2px; }
 
-.mashup-empty { color: var(--muted2); font-size: 13px; padding: 8px 0; }
+.mashup-empty { color: var(--muted2); font-size: 13px; padding: 4px 0; }
 
 .mashup-item {
-  background: var(--surface2); padding: 10px 14px;
+  background: var(--surface2); padding: 7px 12px;
   border-radius: 8px; min-width: 200px;
   border: 1px solid rgba(255,255,255,0.08);
   display: flex; justify-content: space-between; align-items: center; gap: 10px;
@@ -1228,7 +1804,7 @@ body {
 .mashup-info .format { font-size: 11px; color: var(--green); margin-top: 2px; text-transform: uppercase; letter-spacing: 1px; }
 
 .dl-btn {
-  padding: 5px 10px; border-radius: 5px;
+  padding: 4px 9px; border-radius: 5px;
   border: 1px solid rgba(0,234,255,0.3);
   background: rgba(0,234,255,0.07);
   color: var(--cyan); font-size: 12px; font-weight: 600;
@@ -1267,6 +1843,9 @@ body {
 }
 .deck-cyan    .vol-slider-wrap { border: 1px solid rgba(0,234,255,0.12); }
 .deck-magenta .vol-slider-wrap { border: 1px solid rgba(204,0,255,0.12); }
+.deck-yellow    .vol-slider-wrap { border: 1px solid rgba(255,204,0,0.12); }
+.deck-teal    .vol-slider-wrap { border: 1px solid rgba(0,255,179,0.12); }
+.deck-orange    .vol-slider-wrap { border: 1px solid rgba(255,106,0,0.12); }
 
 .vol-icon {
   font-size: 14px; opacity: 0.7;
@@ -1350,6 +1929,9 @@ body {
 .vol-slider::-webkit-slider-thumb:active { cursor: grabbing; transform: scaleX(1.08); }
 .deck-cyan    .vol-slider::-webkit-slider-thumb { box-shadow: 0 0 9px rgba(0,234,255,0.85), 0 2px 3px rgba(0,0,0,0.7), inset 0 1px 0 rgba(255,255,255,0.4); }
 .deck-magenta .vol-slider::-webkit-slider-thumb { box-shadow: 0 0 9px rgba(204,0,255,0.85), 0 2px 3px rgba(0,0,0,0.7), inset 0 1px 0 rgba(255,255,255,0.4); }
+.deck-yellow    .vol-slider::-webkit-slider-thumb { box-shadow: 0 0 9px rgba(255,204,0,0.85), 0 2px 3px rgba(0,0,0,0.7), inset 0 1px 0 rgba(255,255,255,0.4); }
+.deck-teal    .vol-slider::-webkit-slider-thumb { box-shadow: 0 0 9px rgba(0,255,179,0.85), 0 2px 3px rgba(0,0,0,0.7), inset 0 1px 0 rgba(255,255,255,0.4); }
+.deck-orange    .vol-slider::-webkit-slider-thumb { box-shadow: 0 0 9px rgba(255,106,0,0.85), 0 2px 3px rgba(0,0,0,0.7), inset 0 1px 0 rgba(255,255,255,0.4); }
 
 .vol-slider::-moz-range-track { background: transparent; }
 .vol-slider::-moz-range-thumb {
@@ -1363,6 +1945,9 @@ body {
 }
 .deck-cyan    .vol-slider::-moz-range-thumb { box-shadow: 0 0 9px rgba(0,234,255,0.85), 0 2px 3px rgba(0,0,0,0.7); }
 .deck-magenta .vol-slider::-moz-range-thumb { box-shadow: 0 0 9px rgba(204,0,255,0.85), 0 2px 3px rgba(0,0,0,0.7); }
+.deck-yellow    .vol-slider::-moz-range-thumb { box-shadow: 0 0 9px rgba(255,204,0,0.85), 0 2px 3px rgba(0,0,0,0.7); }
+.deck-teal    .vol-slider::-moz-range-thumb { box-shadow: 0 0 9px rgba(0,255,179,0.85), 0 2px 3px rgba(0,0,0,0.7); }
+.deck-orange    .vol-slider::-moz-range-thumb { box-shadow: 0 0 9px rgba(255,106,0,0.85), 0 2px 3px rgba(0,0,0,0.7); }
 
 .vol-value {
   font-family: 'Orbitron', sans-serif;
@@ -1374,6 +1959,9 @@ body {
 }
 .deck-cyan    .vol-value { color: var(--cyan); }
 .deck-magenta .vol-value { color: var(--magenta); }
+.deck-yellow    .vol-value { color: var(--yellow); }
+.deck-teal    .vol-value { color: var(--teal); }
+.deck-orange    .vol-value { color: var(--orange); }
 
 /* Slider de volume du lecteur YouTube live à l'étape ① du Clip Editor —
    même rendu que les Decks A/B (cyan) mais sans hériter du cadre/coins
@@ -1415,8 +2003,8 @@ body {
 }
 
 /* Decks grid plus compact */
-.decks-row {
-  grid-template-columns: 1fr 260px 1fr;
+.studio-grid {
+  grid-template-columns: 1fr 325px 1fr;
   gap: 12px;
   padding: 12px;
 }
@@ -1434,13 +2022,19 @@ body {
   font-size: 12px;
 }
 
-/* Bouton Upload ton track : plus grand, à droite de la barre de recherche */
+/* Bouton Upload ton track : plus grand, à droite de la barre de recherche.
+   position:relative + top négatif : son padding plus généreux que celui du
+   champ de recherche voisin (11px vs 8px) le faisait paraître légèrement
+   plus bas dans la ligne — retour utilisateur : remonter de quelques pixels
+   pour équilibrer visuellement le cadre avec le reste du Deck. */
 .charge-btn-big {
   flex-shrink: 0;
   padding: 11px 16px;
   font-size: 13.5px;
   letter-spacing: 0.5px;
   border-radius: 8px;
+  position: relative;
+  top: -3px;
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -1449,8 +2043,8 @@ body {
 
 /* Tablettes & petits écrans larges : on garde 3 colonnes mais plus compactes */
 @media (max-width: 1180px) {
-  .decks-row {
-    grid-template-columns: 1fr 240px 1fr;
+  .studio-grid {
+    grid-template-columns: 1fr 300px 1fr;
     gap: 10px;
     padding: 10px;
   }
@@ -1458,13 +2052,13 @@ body {
 }
 
 /* Au-delà de ce seuil, la topbar adopte la même grille 1fr / largeur fixe / 1fr
-   que .decks-row, pour que l'horloge soit exactement de la même largeur que
+   que .studio-grid, pour que l'horloge soit exactement de la même largeur que
    le cadre du Mixer et vraiment centrée sur la page (et non juste centrée au
    milieu d'un groupe flex dont les deux côtés ont des largeurs différentes). */
 @media (min-width: 1181px) {
   .topbar {
     display: grid;
-    grid-template-columns: 1fr 260px 1fr;
+    grid-template-columns: 1fr 325px 1fr;
     align-items: center;
     gap: 16px;
   }
@@ -1474,17 +2068,33 @@ body {
 
 /* Sous ce seuil (ou en portrait), on empile Deck A / Mixer / Deck B verticalement */
 @media (max-width: 900px), (orientation: portrait) and (max-width: 1024px) {
-  .decks-row {
+  .studio-grid {
     grid-template-columns: 1fr;
     gap: 14px;
     padding: 12px;
   }
+  /* En 1 colonne, on revient à un empilement séquentiel simple : Deck A,
+     Mixer, Deck B, Sélect ton combo, Mes MacheUps — sinon les placements
+     explicites (grid-row: 1/3, grid-column: 1/3...) se chevauchent tous sur
+     l'unique colonne restante. */
+  .studio-grid > .deck-cyan,
+  .studio-grid > .deck-magenta,
+  .studio-grid > .deck-yellow,
+  .studio-grid > .deck-teal,
+  .studio-grid > .deck-orange,
+  .studio-grid > .mixer,
+  .studio-grid > .combo-panel,
+  .studio-grid > .mashups-bar {
+    grid-column: 1;
+    grid-row: auto;
+  }
   .mixer {
-    max-width: 480px;
+    max-width: 600px;
     width: 100%;
     margin: 0 auto;
   }
   .deck { max-width: 480px; margin: 0 auto; width: 100%; }
+  .combo-panel, .mashups-bar { max-width: 600px; margin: 0 auto; width: 100%; }
 }
 
 /* Topbar : on passe en flex-wrap et on retire les éléments décoratifs */
@@ -1507,42 +2117,45 @@ body {
   .logo-title { font-size: 16px; letter-spacing: 1px; }
   .logo-icon { width: 30px; height: 30px; }
   .logo-icon svg { width: 30px; height: 30px; }
-  .top-btn, .login-btn { padding: 6px 10px; font-size: 12px; }
-  .top-icon-btn { width: 32px; height: 32px; font-size: 15px; }
+  .fx-pad { width: 48px; height: 32px; }
+  .fx-pad-icon { font-size: 11px; }
+  .fx-pad-label { font-size: 7px; }
 
   .mixer-title { font-size: 14px; letter-spacing: 2px; }
   .mixer { padding: 12px; gap: 10px; }
   .deck-label { font-size: 14px; gap: 6px; }
   .deck-letter { font-size: 20px; }
-  .decks-row { padding: 8px; gap: 10px; }
+  .studio-grid { padding: 8px; gap: 10px; }
 
   .mashups-list { gap: 6px; }
   .mashup-item { min-width: 160px; padding: 8px 10px; }
 
-  .logo-marquee-track { gap: 24px; }
-  .logo-marquee-item svg { width: 24px; height: 24px; }
+  .logo-marquee-track { gap: 18px; }
 }
 
 /* Très petits écrans (mobiles étroits) */
 @media (max-width: 380px) {
-  .topbar-right .top-btn span { display: none; }
-  .login-btn span { display: none; }
+  .fx-pad-label { display: none; }
   .fmt-btn, .mode-btn { padding: 7px 3px; }
   .radio-select { max-width: 60px; }
 }
 
 /* ── FOOTER : bandeau logos défilants ── */
 .logo-marquee-wrap {
+  /* +30px par rapport à la hauteur intrinsèque du contenu (~23px) — la
+     frise occupe plus d'espace vertical sans agrandir les logos/textes. */
+  height: 53px;
   overflow: hidden;
   width: 100%;
-  margin-bottom: 14px;
+  margin-bottom: 6px;
   -webkit-mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
   mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
 }
 .logo-marquee-track {
   display: flex;
   align-items: center;
-  gap: 38px;
+  height: 100%;
+  gap: 28px;
   width: max-content;
   animation: logoMarqueeScroll 28s linear infinite;
 }
@@ -1550,25 +2163,28 @@ body {
 .logo-marquee-item {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 6px;
   flex-shrink: 0;
   opacity: 0.8;
   transition: opacity 0.2s;
 }
 .logo-marquee-item:hover { opacity: 1; }
+.logo-marquee-item svg { width: 28px; height: 28px; display: block; }
 .logo-marquee-name {
   display: block;
   font-family: 'Orbitron', sans-serif;
-  font-size: 11px;
+  font-size: 9.5px;
   font-weight: 800;
-  letter-spacing: 1px;
+  letter-spacing: 0.5px;
   color: #ccc;
+  line-height: 1.3;
 }
 .logo-marquee-tag {
   display: block;
-  font-size: 9px;
+  font-size: 8px;
   color: #555;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.3px;
+  line-height: 1.3;
 }
 @keyframes logoMarqueeScroll {
   0% { transform: translateX(0); }

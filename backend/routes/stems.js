@@ -3,9 +3,9 @@ import { v4 as uuidv4 } from "uuid";
 import { join, dirname, extname } from "path";
 import { fileURLToPath } from "url";
 import { existsSync, mkdirSync } from "fs";
-import { copyFile, rm } from "fs/promises";
+import { copyFile, rename, rm } from "fs/promises";
 import { downloadAudio } from "../services/ytdlp.js";
-import { extractAudio, combineTracks } from "../services/ffmpeg.js";
+import { extractAudio, getCachedInstrumental, normalizeStemLoudness } from "../services/ffmpeg.js";
 import { separateStems } from "../services/demucs.js";
 import { getTrack } from "../db/index.js";
 
@@ -29,6 +29,28 @@ router.get("/:id/status", (req, res) => {
 
 const ANALYZE_OUT_DIR = join(__dirname, "../data/outputs");
 const toAbsolute = (url) => join(ANALYZE_OUT_DIR, url.replace(/^\/outputs\//, ""));
+
+// ── Égalisation de niveau voix/instru (export FLAC) ──
+// Demucs ne garantit aucun équilibre de niveau entre stems séparés — sans
+// ça, la voix exportée peut sonner nettement plus (ou moins) forte que
+// l'instru une fois téléchargée séparément, selon le mix d'origine.
+// normalizeStemLoudness (2-passes, cible -16 LUFS commune) appliqué aux DEUX
+// fichiers : ffmpeg ne peut pas écrire dans son propre fichier d'entrée, donc
+// on passe par un fichier temporaire puis on remplace l'original en place —
+// même nom/URL, rien à changer côté frontend. Jamais bloquant : un échec
+// (ffmpeg absent, etc.) laisse simplement le niveau d'origine.
+const tryNormalizeLevel = async (filePath, jobTmp, label) => {
+  const tmpOut = join(jobTmp, `normalized-${label}${extname(filePath)}`);
+  try {
+    await normalizeStemLoudness(filePath, tmpOut);
+    await copyFile(tmpOut, filePath);
+    console.log(`✅ [stems] niveau (${label}) normalisé à -16 LUFS`);
+  } catch (err) {
+    console.warn(`⚠️ [stems] normalisation de niveau (${label}) échouée, repli sur le niveau brut :`, err.message);
+  } finally {
+    await rm(tmpOut, { force: true }).catch(() => {});
+  }
+};
 
 // ── Démarre l'extraction voix/instru (FLAC) d'une vidéo YouTube — utilisé
 // par les 2 boutons "Extraire voix" / "Extraire instru" sous le lecteur des
@@ -56,17 +78,58 @@ router.post("/start", async (req, res) => {
 
   (async () => {
     try {
+      // Vérifie que les fichiers stems référencés en base EXISTENT VRAIMENT
+      // sur le disque avant de faire confiance au cache. Sans ce garde-fou,
+      // une ligne SQLite qui pointe vers des fichiers disparus (nettoyage
+      // manuel de data/outputs/analyze/, disque plein, etc.) fait planter
+      // copyFile avec un ENOENT non récupérable — alors qu'un simple repli
+      // sur la séparation Demucs complète (ci-dessous) aurait suffi. Le cache
+      // sert à ÉVITER un re-traitement, pas à provoquer un échec dur quand
+      // il est périmé.
+      //
+      // Dépend du mode de séparation utilisé pour ce morceau (cf. sélecteur
+      // 2/4 stems, routes/analyze.js) : en mode "2", vocals_path +
+      // instrumental_path sont DÉJÀ exactement voix+instru, rien à combiner.
+      // En mode "4", l'instrumental se déduit en recombinant TOUS les stems
+      // non-vocaux du mode (drums+bass+other) — un simple amix ffmpeg, pas
+      // de GPU. (Le mode 6 stems, avec guitar/piano en plus, a été retiré en
+      // juillet 2026 — cf. services/demucs.js.)
       const analyzed = getTrack(videoId);
-      if (analyzed?.vocals_path && analyzed.drums_path && analyzed.bass_path && analyzed.other_path) {
-        console.log(`[stems] ${videoId} déjà analysé — dérivation depuis les 4 stems (pas de 2e Demucs)`);
+      const stemMode = analyzed?.stem_mode ? Number(analyzed.stem_mode) : null;
+      const nonVocalCols = stemMode === 2 ? null
+        : ["drums_path", "bass_path", "other_path"]; // mode 4 (ou ancien cache sans stem_mode)
+
+      let cacheUsable = false;
+      if (analyzed?.vocals_path) {
+        if (stemMode === 2 && analyzed.instrumental_path) {
+          cacheUsable = existsSync(toAbsolute(analyzed.vocals_path)) && existsSync(toAbsolute(analyzed.instrumental_path));
+        } else if (nonVocalCols && nonVocalCols.every(c => analyzed[c])) {
+          cacheUsable = [analyzed.vocals_path, ...nonVocalCols.map(c => analyzed[c])].every(p => existsSync(toAbsolute(p)));
+        }
+      }
+      if (analyzed?.vocals_path && !cacheUsable) {
+        console.warn(`[stems] ${videoId} : cache SQLite présent mais fichier(s) manquant(s)/incomplet(s) sur le disque — repli sur une séparation Demucs complète`);
+      }
+      if (cacheUsable) {
+        console.log(`[stems] ${videoId} déjà analysé (mode ${stemMode || 4} stems) — dérivation instantanée (pas de 2e Demucs)`);
         const vocalsSrc = toAbsolute(analyzed.vocals_path);
         const vocalsName = "vocals" + extname(vocalsSrc);
         const instruName = "instrumental.flac";
         await copyFile(vocalsSrc, join(jobOut, vocalsName));
-        await combineTracks(
-          [analyzed.drums_path, analyzed.bass_path, analyzed.other_path].map(toAbsolute),
-          join(jobOut, instruName),
-        );
+        if (stemMode === 2) {
+          // Déjà un instrumental complet, rien à combiner.
+          await copyFile(toAbsolute(analyzed.instrumental_path), join(jobOut, instruName));
+        } else {
+          // getCachedInstrumental : ne relance l'amix ffmpeg que la 1ère fois
+          // pour ce morceau — les appels suivants réutilisent le fichier déjà
+          // combiné, mis en cache à côté des stems (cf. services/ffmpeg.js).
+          const combinedInstru = await getCachedInstrumental(...nonVocalCols.map(c => toAbsolute(analyzed[c])));
+          await copyFile(combinedInstru, join(jobOut, instruName));
+        }
+        await Promise.all([
+          tryNormalizeLevel(join(jobOut, vocalsName), jobTmp, "voix"),
+          tryNormalizeLevel(join(jobOut, instruName), jobTmp, "instru"),
+        ]);
         updateJob(jobId, {
           status: "done",
           vocals: `/outputs/stems/${jobId}/${vocalsName}`,
@@ -91,8 +154,18 @@ router.post("/start", async (req, res) => {
 
       const vocalsName = "vocals" + extname(vocals);
       const instruName = "instrumental" + extname(instrumental);
-      await copyFile(vocals, join(jobOut, vocalsName));
-      await copyFile(instrumental, join(jobOut, instruName));
+      // rename() plutôt que copyFile() : la source vient d'un dossier tmp
+      // jetable (stemsTmp, supprimé dans le "finally" plus bas) et n'est plus
+      // utilisée après ce point — un déplacement (même disque) est quasi
+      // instantané, contrairement à une copie qui réécrit tout le fichier
+      // (potentiellement plusieurs dizaines de Mo en FLAC) sur le disque.
+      await rename(vocals, join(jobOut, vocalsName));
+      await rename(instrumental, join(jobOut, instruName));
+
+      await Promise.all([
+        tryNormalizeLevel(join(jobOut, vocalsName), jobTmp, "voix"),
+        tryNormalizeLevel(join(jobOut, instruName), jobTmp, "instru"),
+      ]);
 
       updateJob(jobId, {
         status: "done",

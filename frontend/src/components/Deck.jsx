@@ -2,12 +2,20 @@ import React, { useState, useRef, useEffect, forwardRef, useImperativeHandle } f
 import LyricsModal from "./LyricsModal.jsx";
 import PromptSunoModal from "./PromptSunoModal.jsx";
 import { prefetchMedia } from "../utils/mediaCache.js";
-import { copyToClipboard } from "../utils/clipboard.js";
 
 const YT_API_KEY = import.meta.env.VITE_YOUTUBE_API_KEY;
 
 // Nombre de barres du visualiseur audio (fichiers mp3/uploadés)
 const VIS_BARS = 56;
+
+// Durée max (secondes) d'un clip proposé dans la liste de suggestions — un
+// morceau "normal" dépasse rarement 10 min ; au-delà, c'est presque toujours
+// une compilation/live/mix qui ne convient pas pour un mashup (et plombe
+// inutilement le temps d'extraction/séparation). Exclu directement de la
+// liste plutôt que juste signalé, à la demande de l'utilisateur. Les vidéos
+// dont la durée n'a pas pu être récupérée (durationSec null) ne sont pas
+// filtrées : on ne peut pas juger, donc on ne les exclut pas par défaut.
+const MAX_RESULT_DURATION_SEC = 600; // 10 minutes
 
 function loadYTApi() {
   if (window.YT || document.getElementById("yt-api-script")) return;
@@ -38,11 +46,31 @@ function formatDuration(sec) {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-const Deck = forwardRef(function Deck({ side, onLoaded, onAnalyzed, file }, ref) {
-  const isCyan = side === "A";
-  const color = isCyan ? "cyan" : "magenta";
-  const accentColor = isCyan ? "#00eaff" : "#cc00ff";
-  const accentDim   = isCyan ? "rgba(0,234,255,0.18)" : "rgba(204,0,255,0.18)";
+// label / colorKey (optionnels, Phase 5 UI multi-sources) : par défaut,
+// dérivés de "side" exactement comme avant (aucun changement de comportement
+// pour les 2 appelants existants, qui ne passent ni l'un ni l'autre). Ajoutés
+// pour permettre à un écran à N decks de donner à chaque instance un "side"
+// UNIQUE (nécessaire : iframeContainerId = "yt-player-${side}" collisionnerait
+// entre 2 decks partageant le même "side", cassant la lecture YouTube d'un
+// des deux) tout en gardant un libellé lisible ("DECK 1", "DECK 2"...) et une
+// palette de couleur indépendante de cet identifiant.
+//
+// Palette étendue à 5 couleurs (fusion MacheUp/MULTI, juillet 2026) : A/B
+// gardent exactement leurs couleurs cyan/magenta d'origine (zéro changement
+// visuel pour l'écran 2 decks) ; C/D/E (nouveaux decks ajoutables) reçoivent
+// 3 couleurs supplémentaires, définies comme variables CSS ci-dessous (cf.
+// styles.css :root) pour rester cohérentes avec le reste de l'habillage.
+const DECK_PALETTE = {
+  cyan:    { accent: "#00eaff", dim: "rgba(0,234,255,0.18)" },
+  magenta: { accent: "#cc00ff", dim: "rgba(204,0,255,0.18)" },
+  yellow:  { accent: "#ffcc00", dim: "rgba(255,204,0,0.18)" },
+  teal:    { accent: "#00ffb3", dim: "rgba(0,255,179,0.18)" },
+  orange:  { accent: "#ff6a00", dim: "rgba(255,106,0,0.18)" },
+};
+const Deck = forwardRef(function Deck({ side, label, colorKey, onLoaded, onAnalyzed, file, disabled, onStemsReady, onAcquireAnalyzeLock, presetVideo, hideUpload, stemMode = 4 }, ref) {
+  const displayLabel = label ?? side;
+  const color = colorKey || (side === "A" ? "cyan" : "magenta");
+  const { accent: accentColor, dim: accentDim } = DECK_PALETTE[color] || DECK_PALETTE.cyan;
 
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -52,13 +80,17 @@ const Deck = forwardRef(function Deck({ side, onLoaded, onAnalyzed, file }, ref)
   const [searching, setSearching] = useState(false);
   const [showResults, setShowResults] = useState(false);
   const [searchError, setSearchError] = useState(null);
+  // Filtre "Officiels uniquement" (clips ✓ OFFICIEL) — désactivé par défaut
+  // pour ne pas réduire le choix sans que l'utilisateur l'ait demandé ;
+  // filtrage 100% côté client (aucun appel réseau supplémentaire), donc
+  // instantané à l'activation/désactivation.
+  const [officialOnly, setOfficialOnly] = useState(false);
   const [selectedVideo, setSelectedVideo] = useState(null);
   const [showLyrics, setShowLyrics] = useState(false);
   const [showSuno, setShowSuno] = useState(false);
   const [recognizing, setRecognizing]     = useState(false);
   const [recognizeResult, setRecognizeResult] = useState(null); // { found, title, artist, album, artwork }
   const [recognizeError,  setRecognizeError]  = useState(null);
-  const [linkCopied, setLinkCopied] = useState(false);
 
   // Extraction voix / instru (FLAC) à la demande — un seul job Demucs partagé
   // produit les 2 stems, peu importe lequel des 2 boutons l'a déclenché.
@@ -66,6 +98,25 @@ const Deck = forwardRef(function Deck({ side, onLoaded, onAnalyzed, file }, ref)
   const [stemsStatus, setStemsStatus] = useState("idle"); // idle | running | done | error
   const [stemsError, setStemsError] = useState(null);
   const stemsPollingRef = useRef(false);
+
+  // ── Compteur de génération (même correctif que MashupWheel.jsx/
+  // DjAssistModal.jsx, juillet 2026) ───────────────────────────────────────
+  // Bug de la même famille, jamais corrigé ici : pollAnalyze/pollStems
+  // utilisaient seulement un booléen partagé (analyzePollingRef/
+  // stemsPollingRef) pour empêcher de LANCER un 2e polling en parallèle, mais
+  // ne coupaient jamais une boucle déjà en vol. Si l'utilisateur sélectionne
+  // un 2e morceau dans CE deck pendant que l'analyse/séparation du 1er tourne
+  // encore côté serveur, l'ancienne boucle tick() (fermeture sur l'ancien
+  // jobId) continuait d'appeler setAnalyzeStatus/setAnalyzeResult/
+  // setStemsStatus pour le morceau précédent, en concurrence avec la nouvelle
+  // — un résultat BPM/clé périmé pouvait écraser celui du morceau qu'on vient
+  // de sélectionner, ou le badge restait bloqué sur "en cours" indéfiniment.
+  // Incrémenté dans handleSelect/handleClear/handleFileChange (tout ce qui
+  // change l'identité du morceau chargé) — PAS dans les boutons "réessayer"
+  // (qui relancent une analyse/séparation pour le MÊME morceau, donc restent
+  // valides). Chaque tick() vérifie qu'il appartient toujours à la
+  // génération courante avant d'appliquer le moindre setState.
+  const generationRef = useRef(0);
 
   // Analyse complète (BPM/clé/structure + 4 stems) pour le moteur de scoring
   // de compatibilité — distinct des boutons Voix/Instru FLAC ci-dessus (qui
@@ -86,6 +137,17 @@ const Deck = forwardRef(function Deck({ side, onLoaded, onAnalyzed, file }, ref)
   const smoothRef        = useRef(new Float32Array(VIS_BARS));
   const iframeContainerId = `yt-player-${side}`;
   const searchTimeout     = useRef(null);
+
+  // Ferme l'AudioContext du visualiseur (fichier uploadé) au démontage de ce
+  // Deck (audit juillet 2026) : les Decks C/D/E (mode multi-pistes) peuvent
+  // être ajoutés puis retirés via removeDeck() (MashupStudio.jsx) — s'ils
+  // avaient un fichier local chargé, leur AudioContext restait ouvert
+  // indéfiniment après le démontage. Même risque d'épuisement de la limite
+  // Chrome d'AudioContext non fermés par onglet que pour ComboPanel.jsx (cf.
+  // commentaire là-bas) en cas d'ajout/retrait répété de decks avec fichiers.
+  useEffect(() => {
+    return () => { audioCtxRef.current?.close().catch(() => {}); };
+  }, []);
   const searchAbortRef    = useRef(null);
   const progressInterval  = useRef(null);
 
@@ -115,9 +177,43 @@ const Deck = forwardRef(function Deck({ side, onLoaded, onAnalyzed, file }, ref)
         audioRef.current.currentTime = Math.max(0, audioRef.current.currentTime - seconds);
       }
     },
+    // Retour au tout début du clip (0:00) — remplace le recul de 5s dans le
+    // Mixer (cf. bouton "⏮ Retour au départ"), sans couper la lecture en
+    // cours (même esprit que rewind() ci-dessus).
+    restart: () => {
+      if (selectedVideo && playerRef.current?.seekTo) {
+        playerRef.current.seekTo(0, true);
+      } else if (audioRef.current) {
+        audioRef.current.currentTime = 0;
+      }
+      setProgress(0);
+    },
+    // Coupe le deck (bouton ON/OFF du Mixer) : stoppe la lecture et efface
+    // tout ce qui a été chargé/généré (vidéo/fichier, durées, séparation
+    // stems, analyse) — même logique que le 🗑 du deck, exposée au Mixer.
+    turnOff: () => handleClear(),
   }));
 
   useEffect(() => { loadYTApi(); }, []);
+
+  // Signale au serveur qu'une vidéo n'est pas lisible en intégration (codes
+  // YouTube 100/101/150 — "vidéo supprimée/privée" ou "lecture désactivée sur
+  // d'autres sites Web", cf. message natif du lecteur) : persisté côté
+  // serveur (services/blockedVideos.js) pour qu'elle ne soit plus jamais
+  // proposée dans AUCUNE recherche (en complément du filtre status.embeddable
+  // de l'API YouTube, qui peut être pris en défaut pour certaines vidéos,
+  // comme constaté en pratique). Retire aussi ce résultat de la liste déjà
+  // affichée dans ce deck (le filtre serveur ne s'applique qu'aux recherches
+  // futures, pas à une liste déjà chargée).
+  const blockUnplayableVideo = (video) => {
+    if (!video?.id) return;
+    fetch("http://localhost:3001/api/youtube/block", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ videoId: video.id }),
+    }).catch(() => {});
+    setResults(prev => prev.filter(r => r.id !== video.id));
+  };
 
   // YouTube player
   useEffect(() => {
@@ -133,9 +229,20 @@ const Deck = forwardRef(function Deck({ side, onLoaded, onAnalyzed, file }, ref)
         playerVars: { autoplay: 0, controls: 0, modestbranding: 1, rel: 0 },
         events: {
           onReady: (e) => { e.target.setVolume(volume); },
+          onError: (e) => {
+            if ([100, 101, 150].includes(e.data)) blockUnplayableVideo(selectedVideo);
+          },
           onStateChange: (e) => {
             if (e.data === window.YT.PlayerState.PLAYING) {
               setPlaying(true);
+              // clearInterval AVANT réassignation (audit juillet 2026) : si
+              // 2 événements PLAYING arrivent d'affilée sans repasser par un
+              // autre état (resynchronisation après un seekTo, changement de
+              // qualité auto...), l'ancien intervalle était juste écrasé sans
+              // être annulé — il continuait de tourner indéfiniment en
+              // arrière-plan (setProgress dupliqué), le cleanup de démontage
+              // ne connaissant plus que le DERNIER intervalle assigné.
+              clearInterval(progressInterval.current);
               progressInterval.current = setInterval(() => {
                 if (playerRef.current?.getCurrentTime) {
                   const cur = playerRef.current.getCurrentTime();
@@ -345,14 +452,18 @@ const Deck = forwardRef(function Deck({ side, onLoaded, onAnalyzed, file }, ref)
       const data = await res.json();
       if (controller.signal.aborted) return; // une recherche plus récente a pris le relais
       if (Array.isArray(data)) {
-        const mapped = data.map(item => ({
-          id: item.videoId, title: item.title,
-          channel: item.channel, thumb: item.thumbnail,
-          durationSec: item.durationSec ?? null,
-          isOfficial: !!item.isOfficial,
-          unavailable: !!item.unavailable,
-          unavailableReason: item.unavailableReason || null,
-        }));
+        const mapped = data
+          .map(item => ({
+            id: item.videoId, title: item.title,
+            channel: item.channel, thumb: item.thumbnail,
+            durationSec: item.durationSec ?? null,
+            isOfficial: !!item.isOfficial,
+            unavailable: !!item.unavailable,
+            unavailableReason: item.unavailableReason || null,
+          }))
+          // Clips trop longs (compilations, lives, mix...) exclus de la
+          // liste — pas juste signalés, on ne veut plus les voir du tout.
+          .filter(v => v.durationSec == null || v.durationSec <= MAX_RESULT_DURATION_SEC);
         setResults(mapped);
         setShowResults(true);
       } else {
@@ -390,14 +501,23 @@ const Deck = forwardRef(function Deck({ side, onLoaded, onAnalyzed, file }, ref)
   const pollStems = (jobId) => {
     if (stemsPollingRef.current) return;
     stemsPollingRef.current = true;
+    const gen = generationRef.current;
     const startedAt = Date.now();
     const tick = async () => {
+      if (gen !== generationRef.current) { stemsPollingRef.current = false; return; } // morceau changé entretemps
       try {
         const res = await fetch(`http://localhost:3001/api/stems/${jobId}/status`);
         const data = await res.json();
+        if (gen !== generationRef.current) { stemsPollingRef.current = false; return; }
         if (!res.ok) { setStemsStatus("error"); setStemsError(data.error || "Job introuvable"); stemsPollingRef.current = false; return; }
         setStemsStatus(data.status);
         if (data.status === "error") setStemsError(data.message || "Erreur inconnue");
+        if (data.status === "done") {
+          // Remonte les URLs voix/instru au parent — utilisées par le cadre
+          // "combos" (voix d'un deck + instru de l'autre) à gauche de Mes
+          // MacheUps.
+          if (onStemsReady) onStemsReady({ vocals: data.vocals, instrumental: data.instrumental });
+        }
         if (data.status === "running") {
           if (Date.now() - startedAt > STEMS_MAX_POLL_MS) {
             setStemsStatus("error"); setStemsError("Délai dépassé — réessaie."); stemsPollingRef.current = false; return;
@@ -405,6 +525,7 @@ const Deck = forwardRef(function Deck({ side, onLoaded, onAnalyzed, file }, ref)
           setTimeout(tick, 1500);
         } else stemsPollingRef.current = false;
       } catch (e) {
+        if (gen !== generationRef.current) { stemsPollingRef.current = false; return; }
         setStemsStatus("error"); setStemsError(e.message); stemsPollingRef.current = false;
       }
     };
@@ -440,14 +561,21 @@ const Deck = forwardRef(function Deck({ side, onLoaded, onAnalyzed, file }, ref)
   // compatibilité — vérifie d'abord le cache (/cached/:videoId) avant de
   // lancer un job, pour éviter de re-déclencher Demucs sur un morceau déjà
   // analysé précédemment (cache permanent côté serveur, SQLite).
-  const pollAnalyze = (jobId) => {
-    if (analyzePollingRef.current) return;
+  // Renvoie une Promise qui se résout seulement une fois le job terminé
+  // (done OU error) — nécessaire pour que startAnalyzeFor puisse "attendre"
+  // la fin réelle de l'analyse avant de relâcher le verrou partagé avec
+  // l'autre Deck (cf. onAcquireAnalyzeLock).
+  const pollAnalyze = (jobId) => new Promise((resolve) => {
+    if (analyzePollingRef.current) { resolve(); return; }
     analyzePollingRef.current = true;
+    const gen = generationRef.current;
     const tick = async () => {
+      if (gen !== generationRef.current) { analyzePollingRef.current = false; resolve(); return; } // morceau changé entretemps
       try {
         const res = await fetch(`http://localhost:3001/api/analyze/${jobId}/status`);
         const data = await res.json();
-        if (!res.ok) { setAnalyzeStatus("error"); setAnalyzeError(data.error || "Job introuvable"); analyzePollingRef.current = false; return; }
+        if (gen !== generationRef.current) { analyzePollingRef.current = false; resolve(); return; }
+        if (!res.ok) { setAnalyzeStatus("error"); setAnalyzeError(data.error || "Job introuvable"); analyzePollingRef.current = false; resolve(); return; }
         if (data.status === "done") {
           setAnalyzeStatus("done"); setAnalyzeResult(data.track);
           if (onAnalyzed) onAnalyzed(data.track);
@@ -457,18 +585,22 @@ const Deck = forwardRef(function Deck({ side, onLoaded, onAnalyzed, file }, ref)
           // Demucs), pour gagner le temps qu'aurait pris un clic manuel
           // séparé. data.track a la même forme que "selectedVideo" (id/title).
           startStemsFor(data.track);
+          resolve();
         } else if (data.status === "error") {
           setAnalyzeStatus("error"); setAnalyzeError(data.message || "Erreur inconnue");
           analyzePollingRef.current = false;
+          resolve();
         } else {
           setTimeout(tick, 2000);
         }
       } catch (e) {
+        if (gen !== generationRef.current) { analyzePollingRef.current = false; resolve(); return; }
         setAnalyzeStatus("error"); setAnalyzeError(e.message); analyzePollingRef.current = false;
+        resolve();
       }
     };
     tick();
-  };
+  });
 
   // Prend "video" en paramètre explicite (plutôt que de lire l'état
   // "selectedVideo") pour pouvoir être appelée juste après setSelectedVideo()
@@ -478,8 +610,12 @@ const Deck = forwardRef(function Deck({ side, onLoaded, onAnalyzed, file }, ref)
     if (!video) return;
     setAnalyzeStatus("running"); setAnalyzeError(null);
     try {
-      // Cache d'abord : si déjà analysé, pas besoin de relancer Demucs.
-      const cachedRes = await fetch(`http://localhost:3001/api/analyze/cached/${video.id}`);
+      // Cache d'abord : si déjà analysé DANS LE MÊME MODE (2/4 stems, cf.
+      // sélecteur du cadre COMBO), pas besoin de relancer Demucs — appel
+      // léger, pas besoin de passer par le verrou ci-dessous. Le serveur
+      // renvoie 404 si le cache existe mais sous un AUTRE mode (cf.
+      // routes/analyze.js) — on retombe alors sur l'analyse complète.
+      const cachedRes = await fetch(`http://localhost:3001/api/analyze/cached/${video.id}?stemMode=${stemMode}`);
       if (cachedRes.ok) {
         const track = await cachedRes.json();
         setAnalyzeStatus("done"); setAnalyzeResult(track);
@@ -488,21 +624,33 @@ const Deck = forwardRef(function Deck({ side, onLoaded, onAnalyzed, file }, ref)
         return;
       }
 
-      const res = await fetch("http://localhost:3001/api/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ videoId: video.id, title: video.title }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Échec du lancement");
-      if (data.cached && data.track) {
-        setAnalyzeStatus("done"); setAnalyzeResult(data.track);
-        if (onAnalyzed) onAnalyzed(data.track);
-        startStemsFor(data.track);
-        return;
-      }
-      analyzePollingRef.current = false;
-      pollAnalyze(data.jobId);
+      // Pas en cache → analyse complète (téléchargement + Demucs 4 stems),
+      // lourde en CPU/GPU. Passe par le verrou partagé avec l'autre Deck
+      // (onAcquireAnalyzeLock, fourni par MashupStudio.jsx) pour ne JAMAIS
+      // avoir les analyses A et B en cours en même temps — 2 process Demucs
+      // simultanés (1 par deck) suffisent à saturer le CPU/GPU et faire
+      // planter le process (même principe que la sérialisation déjà en place
+      // entre piste A et B dans le Create Macheup, routes/mashup.js).
+      const runAnalyzeJob = async () => {
+        const res = await fetch("http://localhost:3001/api/analyze", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ videoId: video.id, title: video.title, stemMode }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Échec du lancement");
+        if (data.cached && data.track) {
+          setAnalyzeStatus("done"); setAnalyzeResult(data.track);
+          if (onAnalyzed) onAnalyzed(data.track);
+          startStemsFor(data.track);
+          return;
+        }
+        analyzePollingRef.current = false;
+        await pollAnalyze(data.jobId);
+      };
+
+      if (onAcquireAnalyzeLock) await onAcquireAnalyzeLock(runAnalyzeJob);
+      else await runAnalyzeJob();
     } catch (e) {
       setAnalyzeStatus("error"); setAnalyzeError(e.message);
     }
@@ -512,11 +660,11 @@ const Deck = forwardRef(function Deck({ side, onLoaded, onAnalyzed, file }, ref)
   const handleStartAnalyze = () => startAnalyzeFor(selectedVideo);
 
   const handleSelect = (video) => {
+    generationRef.current++; // invalide tout polling d'analyse/stems en vol pour l'ancien morceau
     searchAbortRef.current?.abort();
     clearTimeout(searchTimeout.current);
     setQuery(video.title); setShowResults(false); setResults([]);
     setSelectedVideo(video); setPlaying(false); setProgress(0);
-    setLinkCopied(false);
     setAnalyzeStatus("idle"); setAnalyzeResult(null); setAnalyzeError(null);
     analyzePollingRef.current = false;
     if (onAnalyzed) onAnalyzed(null);
@@ -526,18 +674,29 @@ const Deck = forwardRef(function Deck({ side, onLoaded, onAnalyzed, file }, ref)
     startAnalyzeFor(video);
     setStemsJobId(null); setStemsStatus("idle"); setStemsError(null);
     stemsPollingRef.current = false;
+    if (onStemsReady) onStemsReady(null);
     if (onLoaded) onLoaded({ type: "youtube", ...video });
   };
 
-  const handleCopyLink = async () => {
-    if (!selectedVideo) return;
-    const { ok } = await copyToClipboard(`https://www.youtube.com/watch?v=${selectedVideo.id}`);
-    if (ok) { setLinkCopied(true); setTimeout(() => setLinkCopied(false), 2000); }
-  };
+  // ── Préchargement externe (Mashup Wheel → "Envoyer en Deck B") ──
+  // Permet à une page tierce de faire sélectionner automatiquement une vidéo
+  // précise à ce Deck, exactement comme si l'utilisateur l'avait choisie dans
+  // le moteur de recherche — même chemin (handleSelect), aucune duplication
+  // de logique. presetAppliedRef évite de rejouer handleSelect en boucle à
+  // chaque re-render (seulement quand l'id proposé change réellement).
+  const presetAppliedRef = useRef(null);
+  useEffect(() => {
+    if (presetVideo && presetVideo.id !== presetAppliedRef.current) {
+      presetAppliedRef.current = presetVideo.id;
+      handleSelect(presetVideo);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [presetVideo]);
 
   const handleFileChange = (e) => {
     const f = e.target.files[0];
     if (f) {
+      generationRef.current++; // invalide tout polling d'analyse/stems en vol pour l'ancien morceau
       clearTimeout(searchTimeout.current);
       searchAbortRef.current?.abort();
       setSelectedVideo(null);
@@ -550,6 +709,7 @@ const Deck = forwardRef(function Deck({ side, onLoaded, onAnalyzed, file }, ref)
       setAnalyzeStatus("idle"); setAnalyzeResult(null); setAnalyzeError(null);
       analyzePollingRef.current = false;
       if (onAnalyzed) onAnalyzed(null);
+      if (onStemsReady) onStemsReady(null);
       if (onLoaded) onLoaded({ type: "file", file: f });
     }
   };
@@ -623,6 +783,7 @@ const Deck = forwardRef(function Deck({ side, onLoaded, onAnalyzed, file }, ref)
   // ────────────────────────────────────────────────────────────────
 
   const handleClear = () => {
+    generationRef.current++; // invalide tout polling d'analyse/stems en vol pour l'ancien morceau
     // Si le player YouTube n'est pas encore "ready" (ou a déjà été détruit),
     // stopVideo()/destroy() peuvent lever une exception — sans ce try/catch,
     // ça interrompait le reste de la fonction et AUCUN état n'était remis à
@@ -642,13 +803,36 @@ const Deck = forwardRef(function Deck({ side, onLoaded, onAnalyzed, file }, ref)
     searchAbortRef.current?.abort();
     setPlaying(false); setProgress(0); setQuery(""); setResults([]);
     setShowResults(false); setSelectedVideo(null);
+    // Efface aussi les jobs/éléments temporaires en cours (séparation stems,
+    // analyse BPM/clé, identification Shazam) — sinon ils restent affichés
+    // pour le morceau qui vient d'être effacé.
+    setStemsJobId(null); setStemsStatus("idle"); setStemsError(null);
+    stemsPollingRef.current = false;
+    setAnalyzeStatus("idle"); setAnalyzeResult(null); setAnalyzeError(null);
+    analyzePollingRef.current = false;
+    setRecognizeResult(null); setRecognizeError(null);
+    if (onAnalyzed) onAnalyzed(null);
+    if (onStemsReady) onStemsReady(null);
     if (onLoaded) onLoaded(null);
+    // BUG "la démo ne se relance pas" (juillet 2026) : presetAppliedRef (cf.
+    // plus bas) retient l'id de la dernière vidéo appliquée via presetVideo
+    // pour éviter de rejouer handleSelect en boucle à chaque re-render. Mais
+    // rien ne le remettait à zéro ici — donc après un changement de mode
+    // 2/4 stems (qui vide les Decks via handleTogglePower→turnOff→handleClear,
+    // cf. MashupStudio.jsx) ou un clic sur 🗑, recliquer sur DEMO avec les
+    // MÊMES morceaux (même id) ne redéclenchait plus rien : le Deck restait
+    // vide, l'utilisateur avait l'impression que "la démo ne se lance pas".
+    presetAppliedRef.current = null;
   };
 
   const fmt = (s) => {
     if (!s || isNaN(s)) return "0:00";
     return `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, "0")}`;
   };
+
+  // Liste affichée dans le dropdown : résultats bruts, ou seulement les
+  // clips ✓ OFFICIEL si le filtre est actif (cf. checkbox ci-dessous).
+  const visibleResults = officialOnly ? results.filter(v => v.isOfficial) : results;
 
   const duration    = selectedVideo && playerRef.current?.getDuration    ? playerRef.current.getDuration()    : (audioRef.current?.duration    || 0);
   const currentTime = selectedVideo && playerRef.current?.getCurrentTime ? playerRef.current.getCurrentTime() : (audioRef.current?.currentTime || 0);
@@ -666,24 +850,40 @@ const Deck = forwardRef(function Deck({ side, onLoaded, onAnalyzed, file }, ref)
   }, [lyricsTarget?.title, lyricsTarget?.channel]);
 
   return (
-    <div className={`deck deck-${color}`}>
+    <div className={`deck deck-${color}`} style={{ position: "relative" }}>
       <audio ref={audioRef}
         onTimeUpdate={() => { if (audioRef.current?.duration) setProgress(audioRef.current.currentTime / audioRef.current.duration); }}
         onEnded={() => setPlaying(false)} />
 
-      {showLyrics && <LyricsModal video={lyricsTarget} onClose={() => setShowLyrics(false)} />}
-      {showSuno   && <PromptSunoModal video={lyricsTarget} onClose={() => setShowSuno(false)} />}
+      {/* Deck éteint via le bouton ON/OFF du Mixer : verrouille toute
+          interaction (recherche, lecture, boutons) et l'indique clairement,
+          plutôt que de simplement vider le deck sans explication. */}
+      {disabled && (
+        <div style={{
+          position: "absolute", inset: 0, zIndex: 5, borderRadius: 14,
+          background: "rgba(5,5,5,0.72)", backdropFilter: "blur(1px)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+        }}>
+          <div style={{
+            display: "flex", alignItems: "center", gap: 8,
+            padding: "8px 16px", borderRadius: 8,
+            border: "1px solid rgba(255,80,80,0.35)", background: "rgba(255,80,80,0.08)",
+            color: "#ff8080", fontFamily: "Orbitron,sans-serif", fontSize: 13,
+            fontWeight: 800, letterSpacing: 2,
+          }}>⏻ DECK {displayLabel} ÉTEINT</div>
+        </div>
+      )}
 
-      <div className="deck-inner">
+      <div className="deck-inner" style={{ pointerEvents: disabled ? "none" : "auto" }}>
         {/* Header */}
         <div className="deck-header">
           <div className="deck-label">
             <span className="deck-dot" />
-            DECK {side} · {isCyan ? "CYAN" : "MAGENTA"}
+            DECK {displayLabel} · {color.toUpperCase()}
           </div>
           <div className="deck-header-right">
             <button className="deck-trash" onClick={handleClear}>🗑</button>
-            <div className="deck-letter">{side}</div>
+            <div className="deck-letter">{displayLabel}</div>
           </div>
         </div>
 
@@ -691,18 +891,31 @@ const Deck = forwardRef(function Deck({ side, onLoaded, onAnalyzed, file }, ref)
         <div className="search-label">Artiste / Chanson Search</div>
         <div style={{ position: "relative" }}>
           <div className="search-row">
-            <button className="search-copy-btn">⊞</button>
             <input type="text" placeholder="Cherche un titre, artiste, ou c..."
               value={query} onChange={handleQueryChange}
               onFocus={() => results.length > 0 && setShowResults(true)} />
-            <label className="charge-btn charge-btn-big">
-              ⬇ UPLOAD TON TRACK
-              <input type="file" accept="audio/*" onChange={handleFileChange} style={{ display: "none" }} />
-            </label>
+            {!hideUpload && (
+              <label className="charge-btn charge-btn-big">
+                ⬇ UPLOAD TON TRACK
+                <input type="file" accept="audio/*" onChange={handleFileChange} style={{ display: "none" }} />
+              </label>
+            )}
           </div>
 
           {showResults && (
-            <div style={{ position:"absolute", top:"100%", left:0, right:0, background:"#0f0f0f", border:`1px solid ${accentColor}33`, borderRadius:8, zIndex:50, maxHeight:280, overflowY:"auto", boxShadow:"0 8px 32px rgba(0,0,0,0.8)" }}>
+            <div style={{ position:"absolute", top:"100%", left:0, right:0, background:"#0f0f0f", border:`1px solid ${accentColor}33`, borderRadius:8, zIndex:50, maxHeight:320, overflowY:"auto", boxShadow:"0 8px 32px rgba(0,0,0,0.8)" }}>
+              {/* Filtre "Officiels uniquement" — n'apparaît que s'il y a des
+                  résultats à filtrer, pour ne pas encombrer les états
+                  recherche/erreur/vide. */}
+              {!searching && !searchError && results.length > 0 && (
+                <label style={{ display:"flex", alignItems:"center", gap:6, padding:"7px 12px",
+                  borderBottom:"1px solid #1a1a1a", fontSize:11, fontWeight:700, color: officialOnly ? "var(--green)" : "#888",
+                  cursor:"pointer", userSelect:"none", position:"sticky", top:0, background:"#0f0f0f", zIndex:1 }}>
+                  <input type="checkbox" checked={officialOnly} onChange={e => setOfficialOnly(e.target.checked)}
+                    style={{ accentColor: "var(--green)", cursor:"pointer" }} />
+                  ✓ Officiels uniquement <span style={{ opacity:0.6, fontWeight:400 }}>(meilleure source audio pour la séparation)</span>
+                </label>
+              )}
               {searching && <div style={{ padding:"12px 14px", color:"#444", fontSize: 14 }}>Recherche...</div>}
               {!searching && searchError && (
                 <div style={{ padding:"12px 14px", color:"#ff6666", fontSize: 13 }}>⚠ {searchError}</div>
@@ -710,7 +923,10 @@ const Deck = forwardRef(function Deck({ side, onLoaded, onAnalyzed, file }, ref)
               {!searching && !searchError && results.length === 0 && query.length >= 2 && (
                 <div style={{ padding:"12px 14px", color:"#444", fontSize: 13 }}>Aucun résultat.</div>
               )}
-              {results.map(video => (
+              {!searching && !searchError && results.length > 0 && visibleResults.length === 0 && (
+                <div style={{ padding:"12px 14px", color:"#444", fontSize: 13 }}>Aucun clip officiel trouvé — désactive le filtre pour voir les autres résultats.</div>
+              )}
+              {visibleResults.map(video => (
                 <div key={video.id} onClick={() => { if (!video.unavailable) handleSelect(video); }}
                   title={video.unavailable ? video.unavailableReason : undefined}
                   style={{ display:"flex", gap:10, padding:"8px 12px", cursor: video.unavailable ? "not-allowed" : "pointer",
@@ -743,36 +959,21 @@ const Deck = forwardRef(function Deck({ side, onLoaded, onAnalyzed, file }, ref)
           )}
         </div>
 
-        {selectedVideo && (
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, marginBottom: 10 }}>
-            <a href={`https://www.youtube.com/watch?v=${selectedVideo.id}`} target="_blank" rel="noreferrer"
-              style={{ flex: 1, minWidth: 0, fontSize: 11, color: accentColor, whiteSpace: "nowrap",
-                overflow: "hidden", textOverflow: "ellipsis", textDecoration: "none" }}>
-              🔗 youtube.com/watch?v={selectedVideo.id}
-            </a>
-            <button onClick={handleCopyLink} type="button"
-              style={{ flexShrink: 0, padding: "3px 9px", borderRadius: 6, fontSize: 11, fontWeight: 700,
-                border: `1px solid ${linkCopied ? accentColor : "rgba(255,255,255,0.15)"}`,
-                background: linkCopied ? `${accentColor}1f` : "rgba(255,255,255,0.03)",
-                color: linkCopied ? accentColor : "#888", cursor: "pointer" }}>
-              {linkCopied ? "✓ Copié" : "📋 Copier"}
-            </button>
-          </div>
-        )}
-
         {/* Video / Visualizer + Vol */}
         <div className="deck-content-row">
           <div className="deck-main">
             {selectedVideo ? (
-              /* YouTube iframe — hauteur fixe (240px), identique au placeholder
-                 ci-dessous : évite un redimensionnement visible du Deck au
-                 moment où une vidéo est choisie. */
-              <div className="waveform-area" style={{ height:240, minHeight:240, maxHeight:240, position:"relative", overflow:"hidden", background:"#000" }}>
+              /* YouTube iframe — hauteur alignée sur celle du sélecteur de
+                 volume (qui s'etire pour remplir tout .deck-content-row) :
+                 plus de hauteur fixe en dur, on s'etire pareil via height:100%
+                 + minHeight:185 (meme plancher que le placeholder ci-dessous —
+                 réduit pour que les cadres tiennent sans dépasser de la page). */
+              <div className="waveform-area" style={{ height:"100%", minHeight:185, position:"relative", overflow:"hidden", background:"#000" }}>
                 <div id={iframeContainerId} style={{ position:"absolute", top:0, left:0, width:"100%", height:"100%" }} />
               </div>
             ) : (
-              /* Audio visualizer canvas — même hauteur fixe que ci-dessus */
-              <div className="waveform-area" style={{ height:240, minHeight:240, maxHeight:240, position:"relative", background: file ? "rgba(0,0,0,0.7)" : "rgba(0,0,0,0.4)", borderRadius:8, overflow:"hidden" }}>
+              /* Audio visualizer canvas — même comportement de hauteur que ci-dessus */
+              <div className="waveform-area" style={{ height:"100%", minHeight:185, position:"relative", background: file ? "rgba(0,0,0,0.7)" : "rgba(0,0,0,0.4)", borderRadius:8, overflow:"hidden" }}>
                 {file ? (
                   <canvas
                     ref={canvasRef}
@@ -783,7 +984,7 @@ const Deck = forwardRef(function Deck({ side, onLoaded, onAnalyzed, file }, ref)
                   <div style={{ position:"absolute", inset:0, display:"flex", flexDirection:"column",
                     alignItems:"center", justifyContent:"center", gap:6 }}>
                     <div style={{ fontFamily:"Orbitron,sans-serif", fontSize: 24, fontWeight:900,
-                      color:accentColor, opacity:0.12, letterSpacing:4 }}>DECK {side}</div>
+                      color:accentColor, opacity:0.12, letterSpacing:4 }}>DECK {displayLabel}</div>
                     <div style={{ fontSize: 11, color:"#333", letterSpacing:2 }}>CHARGE UN FICHIER OU CHERCHE</div>
                   </div>
                 )}
@@ -813,71 +1014,6 @@ const Deck = forwardRef(function Deck({ side, onLoaded, onAnalyzed, file }, ref)
           </div>
         </div>
 
-        {/* Extraction voix / instru (FLAC) — un seul job Demucs partagé pour
-            les 2 boutons : peu importe lequel déclenche la séparation, l'autre
-            stem devient disponible en même temps. */}
-        {selectedVideo && (
-          <div style={{ display: "flex", gap: 8, marginTop: 8, marginBottom: 4 }}>
-            {["vocals", "instrumental"].map((which) => {
-              const label = which === "vocals" ? "🎤 Voix" : "🎹 Instru";
-              const isDone = stemsStatus === "done";
-              const isRunning = stemsStatus === "running";
-              const isError = stemsStatus === "error";
-              // Tant que l'analyse (BPM/clé/structure) n'est pas terminée, on
-              // bloque ces boutons : cliquer pendant l'analyse relançait un 2e
-              // Demucs indépendant en parallèle de celui de l'analyse — les 2
-              // se battaient pour le même GPU (souvent unique sur la machine),
-              // l'un basculait sur CPU (beaucoup plus lent), et le bouton
-              // restait affiché "en cours" pendant un temps qui semblait
-              // infini. En attendant la fin de l'analyse, le job dérivé (ultra
-              // rapide, sans 2e Demucs) est garanti d'être utilisé.
-              const waitingForAnalysis = analyzeStatus === "running" && !isDone && !isRunning && !isError;
-              const disabled = isRunning || waitingForAnalysis;
-              return (
-                <button key={which} type="button"
-                  disabled={disabled}
-                  onClick={() => {
-                    if (isDone && stemsJobId) {
-                      triggerDownload(`http://localhost:3001/api/stems/${stemsJobId}/download/${which}`);
-                    } else if (!disabled) {
-                      handleStartStems();
-                    }
-                  }}
-                  title={waitingForAnalysis ? "Patiente : l'extraction démarrera automatiquement dès la fin de l'analyse"
-                    : isError ? `Erreur : ${stemsError || "réessaie"}`
-                    : isDone ? `Télécharger (${which === "vocals" ? "voix" : "instrumental"}, FLAC)`
-                    : "Extraire voix + instrumental (FLAC)"}
-                  style={{ flex: 1, padding: "6px 0", borderRadius: 6, fontSize: 11, fontWeight: 700,
-                    border: `1px solid ${isDone ? "rgba(170,255,0,0.35)" : isError ? "rgba(255,80,80,0.35)" : "rgba(255,255,255,0.12)"}`,
-                    background: isDone ? "rgba(170,255,0,0.08)" : isError ? "rgba(255,80,80,0.08)" : "rgba(255,255,255,0.03)",
-                    color: isDone ? "var(--green)" : isError ? "#ff8080" : "var(--muted2)",
-                    cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.6 : 1 }}>
-                  {isRunning ? "⏳ Séparation…" : waitingForAnalysis ? "⏳ Attente analyse…" : isDone ? `⬇ ${label} (FLAC)` : isError ? "↺ Réessayer" : `${label} (FLAC)`}
-                </button>
-              );
-            })}
-          </div>
-        )}
-
-        {/* Analyse complète (BPM/clé/structure) pour le scoring de
-            compatibilité entre Deck A et Deck B, affiché dans le Mixer. */}
-        {selectedVideo && (
-          <button type="button"
-            disabled={analyzeStatus === "running"}
-            onClick={handleStartAnalyze}
-            title={analyzeStatus === "error" ? `Erreur : ${analyzeError || "réessaie"}` : "Analyser le morceau (BPM, clé, structure) pour le score de compatibilité"}
-            style={{ width: "100%", marginBottom: 8, padding: "6px 0", borderRadius: 6, fontSize: 11, fontWeight: 700,
-              border: `1px solid ${analyzeStatus === "done" ? "rgba(0,234,255,0.35)" : analyzeStatus === "error" ? "rgba(255,80,80,0.35)" : "rgba(255,255,255,0.12)"}`,
-              background: analyzeStatus === "done" ? "rgba(0,234,255,0.08)" : analyzeStatus === "error" ? "rgba(255,80,80,0.08)" : "rgba(255,255,255,0.03)",
-              color: analyzeStatus === "done" ? "var(--cyan)" : analyzeStatus === "error" ? "#ff8080" : "var(--muted2)",
-              cursor: analyzeStatus === "running" ? "default" : "pointer", opacity: analyzeStatus === "running" ? 0.6 : 1 }}>
-            {analyzeStatus === "running" ? "⏳ Analyse en cours… (peut prendre plusieurs minutes)"
-              : analyzeStatus === "done" ? `✅ ${analyzeResult?.bpm ?? "?"} BPM · ${analyzeResult?.camelot ?? "?"}`
-              : analyzeStatus === "error" ? "↺ Réessayer l'analyse"
-              : "🧬 Analyser (BPM/clé/structure)"}
-          </button>
-        )}
-
         {/* Progress */}
         <div className="progress-row">
           <span className="progress-time">{fmt(currentTime)}</span>
@@ -887,53 +1023,156 @@ const Deck = forwardRef(function Deck({ side, onLoaded, onAnalyzed, file }, ref)
           <span className="progress-time">{fmt(duration)}</span>
         </div>
 
-        <button className="play-btn" onClick={togglePlay}>
-          {playing ? "⏸ PAUSE" : "▶ LECTURE"}
-        </button>
+        {/* ── Cadre Outils : Lyrics / Prompt Suno / Shazam + analyse ──
+            Regroupés ici juste sous la barre de lecture. */}
+        <div className="deck-tools-frame">
+          <div className="deck-footer" style={{ marginBottom: selectedVideo ? 8 : 0 }}>
+            <button className="ghost-btn"
+              onClick={() => lyricsTarget && setShowLyrics(true)}
+              disabled={!lyricsTarget}>
+              📄 LYRICS
+            </button>
+            <button className="ghost-btn"
+              onClick={() => lyricsTarget && setShowSuno(true)}
+              disabled={!lyricsTarget}>
+              ✦ PROMPT SUNO
+            </button>
+            <button
+              className="ghost-btn"
+              onClick={handleRecognize}
+              disabled={!file && !selectedVideo}
+              title="Identifier cette chanson (Shazam)"
+              style={{
+                borderColor: recognizeResult ? `${accentColor}55` : undefined,
+                color: recognizeResult ? accentColor : undefined,
+              }}
+            >
+              {recognizing ? "…" : "⬡ Shazam"}
+            </button>
+          </div>
 
-        <div className="deck-footer">
-          <button className="ghost-btn"
-            onClick={() => lyricsTarget && setShowLyrics(true)}
-            disabled={!lyricsTarget}>
-            📄 LYRICS
-          </button>
-          <button className="ghost-btn"
-            onClick={() => lyricsTarget && setShowSuno(true)}
-            disabled={!lyricsTarget}>
-            ✦ PROMPT SUNO
-          </button>
-          <button
-            className="ghost-btn"
-            onClick={handleRecognize}
-            disabled={!file && !selectedVideo}
-            title="Identifier cette chanson (Shazam)"
-            style={{
-              borderColor: recognizeResult ? `${accentColor}55` : undefined,
-              color: recognizeResult ? accentColor : undefined,
-            }}
-          >
-            {recognizing ? "…" : "⬡ Shazam"}
-          </button>
+          {/* Analyse complète (BPM/clé/structure) pour le scoring de
+              compatibilité entre Deck A et Deck B, affiché dans le Mixer.
+              Pleine largeur tant qu'elle n'est pas terminée (idle/en
+              cours/erreur — le texte est trop long pour un badge compact).
+              Une fois "done", le résultat devient un badge compact fusionné
+              avec la ligne Voix/Instru FLAC juste en dessous (cf. bloc
+              suivant) au lieu d'occuper sa propre ligne pleine largeur — ça
+              économise une rangée entière de hauteur dans le deck après une
+              analyse, justement la cause du scroll de page en trop. */}
+          {selectedVideo && analyzeStatus !== "done" && (
+            <button type="button"
+              disabled={analyzeStatus === "running"}
+              onClick={handleStartAnalyze}
+              title={analyzeStatus === "error" ? `Erreur : ${analyzeError || "réessaie"}` : "Analyser le morceau (BPM, clé, structure) pour le score de compatibilité"}
+              style={{ width: "100%", padding: "6px 0", borderRadius: 6, fontSize: 11, fontWeight: 700,
+                border: `1px solid ${analyzeStatus === "error" ? "rgba(255,80,80,0.35)" : "rgba(255,255,255,0.12)"}`,
+                background: analyzeStatus === "error" ? "rgba(255,80,80,0.08)" : "rgba(255,255,255,0.03)",
+                color: analyzeStatus === "error" ? "#ff8080" : "var(--muted2)",
+                cursor: analyzeStatus === "running" ? "default" : "pointer", opacity: analyzeStatus === "running" ? 0.6 : 1 }}>
+              {analyzeStatus === "running" ? "⏳ Analyse en cours…"
+                : analyzeStatus === "error" ? "↺ Réessayer l'analyse"
+                : "🧬 Analyser (BPM/clé/structure)"}
+            </button>
+          )}
+
+          {/* Extraction voix / instru (FLAC) — un seul job Demucs partagé pour
+              les 2 boutons : peu importe lequel déclenche la séparation, l'autre
+              stem devient disponible en même temps. Le badge BPM/clé (une fois
+              l'analyse terminée) rejoint cette même ligne, à gauche des 2
+              boutons FLAC, au lieu d'une ligne séparée. */}
+          {selectedVideo && (
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              {analyzeStatus === "done" && (
+                <button type="button" onClick={handleStartAnalyze}
+                  title="Relancer l'analyse (BPM, clé, structure)"
+                  style={{
+                    flexShrink: 0, whiteSpace: "nowrap", padding: "6px 10px", borderRadius: 6,
+                    fontSize: 11, fontWeight: 700,
+                    border: "1px solid rgba(0,234,255,0.35)", background: "rgba(0,234,255,0.08)",
+                    color: "var(--cyan)", cursor: "pointer",
+                  }}>
+                  ✅ {analyzeResult?.bpm ?? "?"} BPM · {analyzeResult?.camelot ?? "?"}
+                </button>
+              )}
+              {["vocals", "instrumental"].map((which) => {
+                const label = which === "vocals" ? "🎤 Voix" : "🎹 Instru";
+                const isDone = stemsStatus === "done";
+                const isRunning = stemsStatus === "running";
+                const isError = stemsStatus === "error";
+                // Tant que l'analyse (BPM/clé/structure) n'est pas terminée, on
+                // bloque ces boutons : cliquer pendant l'analyse relançait un 2e
+                // Demucs indépendant en parallèle de celui de l'analyse — les 2
+                // se battaient pour le même GPU (souvent unique sur la machine),
+                // l'un basculait sur CPU (beaucoup plus lent), et le bouton
+                // restait affiché "en cours" pendant un temps qui semblait
+                // infini. En attendant la fin de l'analyse, le job dérivé (ultra
+                // rapide, sans 2e Demucs) est garanti d'être utilisé.
+                const waitingForAnalysis = analyzeStatus === "running" && !isDone && !isRunning && !isError;
+                const disabled = isRunning || waitingForAnalysis;
+                return (
+                  <button key={which} type="button"
+                    disabled={disabled}
+                    onClick={() => {
+                      if (isDone && stemsJobId) {
+                        triggerDownload(`http://localhost:3001/api/stems/${stemsJobId}/download/${which}`);
+                      } else if (!disabled) {
+                        handleStartStems();
+                      }
+                    }}
+                    title={waitingForAnalysis ? "Patiente : l'extraction démarrera automatiquement dès la fin de l'analyse"
+                      : isError ? `Erreur : ${stemsError || "réessaie"}`
+                      : isDone ? `Télécharger (${which === "vocals" ? "voix" : "instrumental"}, FLAC)`
+                      : "Extraire voix + instrumental (FLAC)"}
+                    style={{ flex: 1, padding: "6px 0", borderRadius: 6, fontSize: 11, fontWeight: 700,
+                      border: `1px solid ${isDone ? "rgba(170,255,0,0.35)" : isError ? "rgba(255,80,80,0.35)" : "rgba(255,255,255,0.12)"}`,
+                      background: isDone ? "rgba(170,255,0,0.08)" : isError ? "rgba(255,80,80,0.08)" : "rgba(255,255,255,0.03)",
+                      color: isDone ? "var(--green)" : isError ? "#ff8080" : "var(--muted2)",
+                      cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.6 : 1 }}>
+                    {isRunning ? "⏳ Séparation…" : waitingForAnalysis ? "⏳ Attente analyse…" : isDone ? `⬇ ${label} (FLAC)` : isError ? "↺ Réessayer" : `${label} (FLAC)`}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
 
-        {/* ── Popup résultat Shazam ── */}
+        {/* Lyrics / Prompt Suno — fenêtres flottantes fermables (LyricsModal/
+            PromptSunoModal gèrent elles-mêmes leur overlay plein écran) ;
+            fonctionnent identiquement quel que soit le Deck/la page (Studio,
+            Mashup Wheel...) puisque ce composant Deck est partagé partout. */}
+        {showLyrics && <LyricsModal video={lyricsTarget} onClose={() => setShowLyrics(false)} />}
+        {showSuno   && <PromptSunoModal video={lyricsTarget} onClose={() => setShowSuno(false)} />}
+
+        {/* ── Fenêtre flottante résultat Shazam (retour utilisateur, juillet
+            2026 : Lyrics/Prompt Suno/Shazam doivent TOUS les 3 s'ouvrir en
+            fenêtres flottantes fermables, pas inline dans le Deck) — même
+            overlay plein écran que LyricsModal/PromptSunoModal, fermable via
+            ✕ ou clic à l'extérieur. */}
         {(recognizeResult || recognizeError) && (
-          <div style={{
-            marginTop: 8,
-            background: "#0c0c0c",
-            border: `1px solid ${recognizeError ? "rgba(255,80,80,0.25)" : accentColor + "33"}`,
-            borderRadius: 10,
-            padding: "10px 12px",
-            position: "relative",
-            animation: "fadeIn 0.2s ease",
-          }}>
+          <div
+            style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.88)", backdropFilter: "blur(8px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}
+            onClick={() => { setRecognizeResult(null); setRecognizeError(null); }}
+          >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              background: "#0c0c0c",
+              border: `1px solid ${recognizeError ? "rgba(255,80,80,0.25)" : accentColor + "33"}`,
+              borderRadius: 14,
+              padding: "20px 22px",
+              width: 420, maxWidth: "90vw",
+              position: "relative",
+              boxShadow: "0 20px 60px rgba(0,0,0,0.8)",
+              animation: "fadeIn 0.2s ease",
+            }}>
             <button onClick={() => { setRecognizeResult(null); setRecognizeError(null); }} style={{
-              position: "absolute", top: 6, right: 8,
-              background: "transparent", border: "none", color: "#444",
-              cursor: "pointer", fontSize: 14, lineHeight: 1,
+              position: "absolute", top: 10, right: 12,
+              background: "transparent", border: "1px solid #333", color: "#555", borderRadius: 6,
+              width: 28, height: 28, cursor: "pointer", fontSize: 15, lineHeight: 1,
             }}
             onMouseEnter={e => e.currentTarget.style.color = "white"}
-            onMouseLeave={e => e.currentTarget.style.color = "#444"}
+            onMouseLeave={e => e.currentTarget.style.color = "#555"}
             >✕</button>
 
             {recognizeError && (
@@ -1027,6 +1266,7 @@ const Deck = forwardRef(function Deck({ side, onLoaded, onAnalyzed, file }, ref)
             )}
 
             <style>{`@keyframes fadeIn { from { opacity:0; transform:translateY(-4px) } to { opacity:1; transform:none } }`}</style>
+          </div>
           </div>
         )}
       </div>

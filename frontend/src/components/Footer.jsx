@@ -88,6 +88,41 @@ const LOGO_CONCEPTS = [
     ),
   },
   // ── Technologies utilisées (crédits "powered by") ──
+  // Logos stylisés maison (comme pour NVIDIA/FFmpeg/YouTube ci-dessous) —
+  // pas de fichier de logo officiel Anthropic/Claude importé, une abstraction
+  // géométrique dans leurs teintes de marque (terracotta/orange).
+  {
+    name: "Anthropic",
+    tag: "L'IA qui a conçu MacheUp Studio.",
+    svg: (
+      <svg viewBox="0 0 40 40" width="30" height="30">
+        <defs>
+          <linearGradient id="lc-anthropic" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor="#e8a685" />
+            <stop offset="100%" stopColor="#d97757" />
+          </linearGradient>
+        </defs>
+        <rect x="4" y="4" width="32" height="32" rx="9" fill="#0a0a0a" stroke="url(#lc-anthropic)" strokeWidth="1.4" />
+        <path d="M13 27 L20 12 L27 27 M16.5 20 H23.5" fill="none" stroke="url(#lc-anthropic)" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    ),
+  },
+  {
+    name: "Claude",
+    tag: "Assistant IA de développement.",
+    svg: (
+      <svg viewBox="0 0 40 40" width="30" height="30">
+        <defs>
+          <linearGradient id="lc-claude" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor="#ffb088" />
+            <stop offset="100%" stopColor="#da7756" />
+          </linearGradient>
+        </defs>
+        <path d="M20 4 C21 14 22 18 32 20 C22 22 21 26 20 36 C19 26 18 22 8 20 C18 18 19 14 20 4 Z"
+          fill="url(#lc-claude)" opacity="0.95" />
+      </svg>
+    ),
+  },
   {
     name: "NVIDIA CUDA",
     tag: "Accélération GPU (Demucs, export vidéo).",
@@ -414,11 +449,12 @@ export default function Footer() {
       <footer style={{
         borderTop: "1px solid #141414",
         background: "#080808",
-        padding: "20px 24px",
-        marginTop: 8,
+        padding: "10px 24px",
+        marginTop: "auto",
+        flexShrink: 0,
       }}>
         {/* Logo / Brand */}
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
           <div style={{ fontFamily: "Orbitron,sans-serif", fontSize: 15, fontWeight: 900,
             letterSpacing: 3, color: "#cc00ff" }}>MACHEUP<span style={{ color: "#00eaff" }}> STUDIO</span></div>
           <div style={{ fontSize: 11, color: "#333", letterSpacing: 1 }}>© {YEAR}</div>
@@ -427,30 +463,36 @@ export default function Footer() {
         {/* Bandeau logos défilants */}
         <LogoMarquee />
 
-        {/* Disclaimer droits d'auteur */}
+        {/* Disclaimer droits d'auteur — présenté comme un bandeau "bouton"
+            rouge d'avertissement (toujours visible, non cliquable : c'est le
+            texte légal lui-même, pas une action). */}
         <div style={{
-          fontSize: 11, color: "#2a2a2a", lineHeight: 1.7, letterSpacing: 0.5,
-          borderTop: "1px solid #111", paddingTop: 14,
+          fontSize: 10, color: "#aa6666", lineHeight: 1.5, letterSpacing: 0.3,
+          background: "rgba(255,30,30,0.08)",
+          border: "1px solid rgba(255,60,60,0.4)",
+          borderRadius: 8,
+          padding: "8px 12px",
+          boxShadow: "0 0 12px rgba(255,40,40,0.1)",
           maxWidth: "100%",
         }}>
-          <span style={{ color: "#333" }}>⚠ Avertissement légal · </span>
-          MacheUp Studio est un outil de création à usage <strong style={{ color: "#3a3a3a" }}>strictement personnel et non commercial</strong>.
+          <span style={{ color: "#ff5f5f", fontWeight: 700 }}>⚠ Avertissement légal · </span>
+          MacheUp Studio est un outil de création à usage <strong style={{ color: "#ff8a8a" }}>strictement personnel et non commercial</strong>.
           Les contenus audio et vidéo utilisés via YouTube restent la propriété de leurs ayants droit.
           La création de macheups est soumise au droit d'auteur (Code de la Propriété Intellectuelle, art. L.122-5).
           Toute distribution ou exploitation commerciale sans accord des ayants droit est interdite.
           L'usage de l'API YouTube est soumis aux{" "}
           <a href="https://www.youtube.com/t/terms" target="_blank" rel="noopener noreferrer"
-            style={{ color: "#444", textDecoration: "none", borderBottom: "1px solid #2a2a2a" }}>
+            style={{ color: "#ff9d9d", textDecoration: "none", borderBottom: "1px solid rgba(255,95,95,0.4)" }}>
             Conditions d'utilisation YouTube
           </a>.{" "}
           La reconnaissance audio utilise <a href="https://audd.io/terms/" target="_blank" rel="noopener noreferrer"
-            style={{ color: "#444", textDecoration: "none", borderBottom: "1px solid #2a2a2a" }}>AudD API</a> (extrait audio ≤ 800 Ko).
+            style={{ color: "#ff9d9d", textDecoration: "none", borderBottom: "1px solid rgba(255,95,95,0.4)" }}>AudD API</a> (extrait audio ≤ 800 Ko).
           Les liens Spotify, Deezer et YouTube sont fournis à titre indicatif et ne constituent pas un partenariat commercial.
         </div>
 
         {/* Badges conformité + Liens légaux sur la même ligne */}
         <div style={{
-          display: "flex", flexWrap: "wrap", gap: 12, marginTop: 14,
+          display: "flex", flexWrap: "wrap", gap: 12, marginTop: 6,
           alignItems: "center", justifyContent: "space-between",
         }}>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>

@@ -1,6 +1,6 @@
 import React, { useState, useRef } from "react";
 
-export default function MashupsBar({ mashups = [], onDelete }) {
+export default function MashupsBar({ mashups = [], onDelete, onRefresh, onClearAll }) {
   // Petit player partagé : un seul <audio> pour toutes les cartes (au lieu
   // d'un par carte) — démarrer la lecture d'une carte met automatiquement en
   // pause la précédente, comme un vrai player de playlist.
@@ -32,7 +32,25 @@ export default function MashupsBar({ mashups = [], onDelete }) {
           Mes MacheUps
           <span className="mashups-count">[{mashups.length}]</span>
         </div>
-        <button className="refresh-btn">↺ ACTUALISER</button>
+        <div style={{ display: "flex", gap: 6 }}>
+          {/* Correctif juillet 2026 : ce bouton n'avait jusqu'ici AUCUN
+              onClick (no-op silencieux) — cf. services/mashupHistory.js et
+              routes/mashups.js côté serveur pour la vraie source de vérité
+              persistante que ce bouton relit désormais. */}
+          <button className="refresh-btn" onClick={() => onRefresh && onRefresh()}>↺ ACTUALISER</button>
+          {/* Nouveau (retour utilisateur juillet 2026) : vider tout
+              l'historique ET les fichiers FLAC/MP4 correspondants sur le
+              disque — pour l'utilisateur qui veut faire le ménage plutôt que
+              de supprimer les macheups un par un. */}
+          {mashups.length > 0 && (
+            <button
+              className="refresh-btn"
+              title="Supprimer tout l'historique et les fichiers générés"
+              onClick={() => onClearAll && onClearAll()}
+              style={{ color: "rgba(255,90,90,0.75)", borderColor: "rgba(255,60,60,0.3)" }}
+            >🧹 VIDER</button>
+          )}
+        </div>
       </div>
 
       <div className="mashups-list">
@@ -43,17 +61,24 @@ export default function MashupsBar({ mashups = [], onDelete }) {
         ) : (
           mashups.map(m => (
             <div key={m.id} className="mashup-item">
-              {/* Vignette pochette + bouton play superposé */}
+              {/* Vignette + bouton play superposé. Priorité à une vraie image
+                  du clip généré : un <video> sans contrôles, sur sa première
+                  image décodée, sert de miniature (au lieu de la pochette IA
+                  ou de l'icône générique) — visuellement, on reconnaît tout
+                  de suite le clip plutôt qu'une pochette abstraite. */}
               <div style={{
-                width: 44, height: 44, borderRadius: 6, flexShrink: 0,
+                width: 34, height: 34, borderRadius: 6, flexShrink: 0,
                 overflow: "hidden", background: "#111", position: "relative",
                 border: "1px solid rgba(255,255,255,0.06)",
                 display: "flex", alignItems: "center", justifyContent: "center",
               }}>
-                {m.cover ? (
+                {m.mp4Url ? (
+                  <video src={m.mp4Url} muted preload="metadata" playsInline
+                    style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                ) : m.cover ? (
                   <img src={m.cover} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                 ) : (
-                  <span style={{ fontSize: 19, opacity: 0.25 }}>🎵</span>
+                  <span style={{ fontSize: 15, opacity: 0.25 }}>🎵</span>
                 )}
                 <button
                   onClick={() => togglePlay(m)}
@@ -72,7 +97,14 @@ export default function MashupsBar({ mashups = [], onDelete }) {
               </div>
 
               <div className="mashup-info" style={{ flex: 1, minWidth: 0 }}>
-                <div className="title" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.title}</div>
+                {/* Étiquette à fond coloré — pour repérer le mashup d'un coup
+                    d'œil dans la liste, au lieu d'un simple texte uniforme. */}
+                <div className="title" style={{
+                  display: "inline-block", maxWidth: "100%", boxSizing: "border-box",
+                  background: "rgba(0,234,255,0.12)", border: "1px solid rgba(0,234,255,0.35)",
+                  borderRadius: 5, padding: "2px 8px", color: "var(--cyan)",
+                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                }}>{m.title}</div>
                 <div className="format">FLAC{m.mp4Url ? " + MP4" : ""}</div>
               </div>
               {/* FLAC + MP4 sont générés ensemble — un bouton de téléchargement
@@ -95,7 +127,7 @@ export default function MashupsBar({ mashups = [], onDelete }) {
                 style={{
                   background: "transparent", border: "1px solid rgba(255,60,60,0.2)",
                   color: "rgba(255,80,80,0.45)", borderRadius: 6,
-                  width: 28, height: 28, cursor: "pointer", fontSize: 15,
+                  width: 24, height: 24, cursor: "pointer", fontSize: 13,
                   display: "flex", alignItems: "center", justifyContent: "center",
                   flexShrink: 0, transition: "all 0.15s",
                 }}
