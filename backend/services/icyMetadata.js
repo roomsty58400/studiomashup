@@ -1,6 +1,6 @@
 import http from "http";
 import https from "https";
-import { assertPublicHttpUrl } from "./urlSafety.js";
+import { assertPublicHttpUrl, assertResolvesToPublicIp } from "./urlSafety.js";
 
 // ── Lecture du titre en cours via les métadonnées ICY (Shoutcast/Icecast) ──
 // La plupart des flux radio embarquent, tous les N octets ("icy-metaint",
@@ -24,19 +24,23 @@ export const fetchIcyTitle = (streamUrl, timeoutMs = 6000) => new Promise((resol
 
   const req = mod.get(streamUrl, {
     headers: { "Icy-MetaData": "1", "User-Agent": "MacheUpStudio/1.0" },
-  }, (res) => {
+  }, async (res) => {
     // Suit les redirections (302 fréquent sur les relais de flux radio).
     // Revalidation anti-SSRF à CHAQUE redirection (audit juillet 2026) : une
     // URL de départ publique et légitime pourrait rediriger vers une adresse
     // interne (volontairement, ou via un relais compromis) — la vérification
     // faite une seule fois côté route (routes/radio.js) ne couvrirait pas ce
-    // cas sans ce contrôle supplémentaire ici, à chaque saut.
+    // cas sans ce contrôle supplémentaire ici, à chaque saut. 2e passe (audit
+    // juillet 2026 bis) : résolution DNS réelle en plus de la chaîne d'URL,
+    // même raisonnement qu'à l'entrée (cf. services/urlSafety.js) — un relais
+    // pourrait rediriger vers un nom de domaine dont le DNS pointe en interne.
     if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
       res.destroy();
       let nextUrl;
       try {
         nextUrl = new URL(res.headers.location, streamUrl).toString();
         assertPublicHttpUrl(nextUrl);
+        await assertResolvesToPublicIp(nextUrl);
       } catch (e) {
         settle(reject, new Error(`Redirection refusée : ${e.message}`));
         return;

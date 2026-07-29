@@ -5,7 +5,8 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { existsSync, mkdirSync } from "fs";
 import { fetchNowPlayingTitle } from "../services/icyMetadata.js";
-import { assertPublicHttpUrl } from "../services/urlSafety.js";
+import { assertPublicHttpUrl, assertResolvesToPublicIp } from "../services/urlSafety.js";
+import { registerJobCleanup } from "../services/jobCleanup.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const router = express.Router();
@@ -39,9 +40,12 @@ router.get("/now-playing", async (req, res) => {
   // de flux radio arbitraire et fait une requête HTTP sortante avec —
   // n'importe quelle page web ouverte dans le même navigateur pourrait
   // sinon déclencher un scan du réseau local via une simple <img src=...>.
-  // Cf. services/urlSafety.js pour le détail du raisonnement.
+  // Cf. services/urlSafety.js pour le détail du raisonnement. 2 contrôles :
+  // la chaîne d'URL (synchrone) puis la résolution DNS réelle (2e passe,
+  // anti-rebinding statique).
   try {
     assertPublicHttpUrl(url);
+    await assertResolvesToPublicIp(url);
   } catch (e) {
     return res.status(400).json({ error: e.message });
   }
@@ -100,15 +104,23 @@ mkdirSync(RECORD_DIR, { recursive: true });
 const MAX_RECORD_SEC = 20 * 60;
 
 const recordings = new Map(); // id -> { proc, status, filePath, fileName, title, startedAt, error }
+// Purge des enregistrements terminés (done/error) — cette Map n'a pas de champ
+// "updatedAt" (contrairement au pattern jobs/updateJob des autres routes) :
+// on retombe sur "startedAt", suffisant ici (un enregistrement dure au plus
+// MAX_RECORD_SEC = 20 min, largement sous le délai de grâce de purge).
+registerJobCleanup(recordings, { label: "[radio-recordings]", getUpdatedAt: (job) => job.startedAt });
 
-router.post("/record/start", (req, res) => {
+router.post("/record/start", async (req, res) => {
   const { url, title } = req.body || {};
   if (!url) return res.status(400).json({ error: "url requise" });
   // Même garde-fou anti-SSRF que /now-playing — d'autant plus important ici
   // puisque cette route lance un vrai processus ffmpeg qui écrit sur le
-  // disque local le contenu de l'URL fournie.
+  // disque local le contenu de l'URL fournie. 2 contrôles : la chaîne d'URL
+  // (synchrone) puis la résolution DNS réelle (2e passe, anti-rebinding
+  // statique).
   try {
     assertPublicHttpUrl(url);
+    await assertResolvesToPublicIp(url);
   } catch (e) {
     return res.status(400).json({ error: e.message });
   }

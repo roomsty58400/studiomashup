@@ -29,6 +29,7 @@ import { extractAudio } from "../services/ffmpeg.js";
 import { analyzeAudio } from "../services/analyzer.js";
 import { getTrack, upsertTrack, listAnalyzedTracks } from "../db/index.js";
 import { computeCompatibility } from "../services/scoring.js";
+import { registerJobCleanup } from "../services/jobCleanup.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const router = express.Router();
@@ -41,6 +42,20 @@ const SELF_BASE = `http://localhost:${process.env.PORT || 3001}`;
 // ── Jobs en mémoire (même pattern que routes/analyze.js, mashup.js...) ──
 const jobs = new Map();
 const updateJob = (id, patch) => jobs.set(id, { ...(jobs.get(id) || {}), ...patch, updatedAt: Date.now() });
+registerJobCleanup(jobs, { label: "[mashup-wheel]" });
+
+// ── Verrou anti-doublon (généralisé lors de l'audit de juillet 2026, même
+// principe que routes/mashup.js/analyze.js) — sans ça, relancer la roue 2
+// fois de suite sur le même morceau avant la fin du premier calcul (clic
+// rapide, changement d'onglet et retour) lance 2 découvertes YouTube/analyses
+// en parallèle pour rien, chacune pouvant re-télécharger/analyser les mêmes
+// morceaux candidats. Clé = videoId source uniquement (un seul calcul de
+// roue par morceau source à la fois, quel que soit qui l'a demandé).
+const activeWheels = new Map(); // videoId -> jobId
+const isJobActive = (id) => {
+  const job = jobs.get(id);
+  return !!job && job.status !== "done" && job.status !== "error";
+};
 
 router.get("/:id/status", (req, res) => {
   const job = jobs.get(req.params.id);
@@ -284,7 +299,15 @@ router.post("/start", async (req, res) => {
     return res.status(400).json({ error: "Ce morceau n'a pas encore été analysé (BPM/clé) — patiente la fin de l'analyse automatique du Deck avant de chercher des correspondances." });
   }
 
+  // Verrou anti-doublon — cf. commentaire sur activeWheels plus haut.
+  const runningJobId = activeWheels.get(videoId);
+  if (runningJobId && isJobActive(runningJobId)) {
+    console.log(`[mashup-wheel] ${videoId} : calcul déjà en cours (job ${runningJobId}) — pas de second lancement`);
+    return res.json({ jobId: runningJobId });
+  }
+
   const jobId = uuidv4();
+  activeWheels.set(videoId, jobId);
   res.json({ jobId });
   updateJob(jobId, { status: "running", step: "pool", videoId, title: title || source.title });
 
@@ -451,6 +474,9 @@ router.post("/start", async (req, res) => {
     } catch (err) {
       console.error("[mashup-wheel] échec :", err.message);
       updateJob(jobId, { status: "error", message: err.message });
+    } finally {
+      // Libère le verrou (uniquement si c'est toujours CE job qui le détient).
+      if (activeWheels.get(videoId) === jobId) activeWheels.delete(videoId);
     }
   })();
 });

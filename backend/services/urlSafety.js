@@ -18,12 +18,17 @@
 // (scan de ports, interaction avec des services internes) reste possible
 // sans ce garde-fou.
 //
-// Portée volontairement limitée (app perso, usage desktop) : on bloque les
-// URLs qui pointent LITTÉRALEMENT (par IP ou nom d'hôte évident) vers une
-// adresse privée/loopback/link-local. On ne fait PAS de résolution DNS pour
-// détecter un éventuel "DNS rebinding" (un nom de domaine public qui
-// résoudrait vers une IP interne) — un durcissement plus complet mais hors
-// de portée raisonnable pour une appli non exposée à Internet.
+// Deux niveaux de contrôle, volontairement séparés :
+//  1. assertPublicHttpUrl() — bloque les URLs qui pointent LITTÉRALEMENT
+//     (par IP ou nom d'hôte évident) vers une adresse privée/loopback/
+//     link-local. Synchrone, aucun appel réseau.
+//  2. assertResolvesToPublicIp() (audit juillet 2026, 2e passe) — résout
+//     RÉELLEMENT le nom d'hôte et rejette si l'IP obtenue est privée/interne
+//     ("DNS rebinding" statique : un domaine public dont le A/AAAA pointe
+//     vers une IP interne). Cf. commentaire détaillé au-dessus de sa
+//     définition pour la limite assumée (protection au moment de la
+//     vérification, pas garantie au moment exact de la connexion réelle).
+import { lookup as dnsLookup } from "dns/promises";
 
 const ipv4Octets = (host) => {
   const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
@@ -77,4 +82,49 @@ export const assertPublicHttpUrl = (rawUrl) => {
     throw new Error("Adresse IP privée/interne non autorisée pour cette fonction.");
   }
   return u;
+};
+
+// ── Durcissement DNS rebinding (audit juillet 2026, 2e passe) ──────────────
+// assertPublicHttpUrl() ci-dessus ne regarde que la CHAÎNE de l'URL fournie
+// (IP littérale ou nom d'hôte évident) — un nom de domaine public tout à fait
+// normal en apparence peut avoir un enregistrement DNS A/AAAA qui pointe vers
+// une adresse privée/interne (pas besoin d'un TTL qui change pour ça : un
+// simple enregistrement statique malveillant suffit). assertResolvesToPublicIp()
+// résout RÉELLEMENT le nom d'hôte et rejette si UNE SEULE des adresses
+// obtenues est privée/réservée.
+//
+// Limite assumée (documentée pour transparence, comme le reste de ce
+// fichier) : ceci protège le moment de la VÉRIFICATION, pas nécessairement
+// celui de la connexion réelle qui suit juste après — fetch()/spawn ffmpeg
+// résolvent le DNS une SECONDE fois, indépendamment de ce contrôle. Un vrai
+// rebinding "TOCTOU" (le DNS change PENDANT la toute petite fenêtre entre
+// cette vérification et la connexion réelle, TTL très court) resterait
+// théoriquement possible. Le fermer complètement exigerait de résoudre l'IP
+// UNE fois puis de forcer fetch()/ffmpeg à s'y connecter directement
+// (pinning d'adresse tout en gardant le Host d'origine) — hors de portée
+// raisonnable pour cette passe (app desktop non exposée à Internet ; ce
+// scénario suppose un attaquant qui contrôle déjà le DNS d'un domaine ET
+// devine le timing exact d'une requête locale). Ce qui EST fermé ici : le cas
+// réaliste et statique — un domaine public dont le A/AAAA pointe simplement,
+// tout le temps, vers une adresse privée.
+export const assertResolvesToPublicIp = async (rawUrl) => {
+  const u = new URL(rawUrl);
+  const host = u.hostname.replace(/^\[|\]$/g, "");
+  // Hôte déjà une IP littérale : assertPublicHttpUrl l'a déjà validée plus
+  // haut dans l'appelant, rien de plus à résoudre.
+  if (ipv4Octets(host) || host.includes(":")) return;
+  let addresses;
+  try {
+    addresses = await dnsLookup(host, { all: true, verbatim: true });
+  } catch (e) {
+    throw new Error(`Résolution DNS impossible pour "${host}" : ${e.message}`);
+  }
+  if (!addresses || addresses.length === 0) {
+    throw new Error(`Aucune adresse résolue pour "${host}".`);
+  }
+  for (const { address } of addresses) {
+    if (isPrivateOrReservedIPv4(address) || isPrivateOrReservedIPv6(address)) {
+      throw new Error(`Hôte "${host}" résout vers une adresse privée/interne (${address}) — refusé.`);
+    }
+  }
 };

@@ -10,6 +10,7 @@ import { extractAudio, exportMP3 } from "../services/ffmpeg.js";
 import { separateStems } from "../services/demucs.js";
 import { dereverbVocals } from "../services/dereverb.js";
 import { recomposeReplace, combineStems, stripAudio } from "../services/clipEditor.js";
+import { registerJobCleanup } from "../services/jobCleanup.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const router = express.Router();
@@ -39,6 +40,7 @@ const upload = multer({ storage, limits: { fileSize: 300 * 1024 * 1024 } });
 // ── Jobs en mémoire (même pattern que routes/mashup.js) ──
 const jobs = new Map();
 const updateJob = (id, patch) => jobs.set(id, { ...(jobs.get(id) || {}), ...patch, updatedAt: Date.now() });
+registerJobCleanup(jobs, { label: "[clip-editor]" });
 
 router.get("/:id/status", (req, res) => {
   const job = jobs.get(req.params.id);

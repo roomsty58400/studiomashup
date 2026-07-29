@@ -1,5 +1,6 @@
 import express from "express";
 import { runRavedjAutomation } from "../services/ravedjAutomation.js";
+import { registerJobCleanup } from "../services/jobCleanup.js";
 
 const router = express.Router();
 
@@ -11,6 +12,7 @@ const router = express.Router();
 // polling par le frontend pour l'avancement.
 const jobs = new Map();
 const updateJob = (id, patch) => jobs.set(id, { ...(jobs.get(id) || {}), ...patch, updatedAt: Date.now() });
+registerJobCleanup(jobs, { label: "[ravedj-auto]" });
 
 router.post("/", (req, res) => {
   const { urlA, urlB } = req.body || {};

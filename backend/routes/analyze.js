@@ -10,6 +10,7 @@ import { analyzeAudio } from "../services/analyzer.js";
 import { separateStems, separateStemsFull, STEM_MODE_NAMES } from "../services/demucs.js";
 import { getTrack, upsertTrack } from "../db/index.js";
 import { computeCompatibility } from "../services/scoring.js";
+import { registerJobCleanup } from "../services/jobCleanup.js";
 
 // ── Sélecteur 2/4 stems ──────────────────────────────────────────────────
 // Décrit, pour chaque mode, la correspondance entre le nom de piste renvoyé
@@ -45,6 +46,7 @@ mkdirSync(OUT_DIR, { recursive: true });
 // ── Jobs en mémoire (même pattern que routes/mashup.js, clipEditor.js, stems.js) ──
 const jobs = new Map();
 const updateJob = (id, patch) => jobs.set(id, { ...(jobs.get(id) || {}), ...patch, updatedAt: Date.now() });
+registerJobCleanup(jobs, { label: "[analyze]" });
 
 // ── Verrou par (videoId, stemMode) — audit juillet 2026 ──
 // Sans ça, deux requêtes simultanées pour le même morceau (double-clic sur

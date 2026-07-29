@@ -8,6 +8,7 @@ import { downloadAudio } from "../services/ytdlp.js";
 import { extractAudio, getCachedInstrumental, normalizeStemLoudness } from "../services/ffmpeg.js";
 import { separateStems } from "../services/demucs.js";
 import { getTrack } from "../db/index.js";
+import { registerJobCleanup } from "../services/jobCleanup.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const router = express.Router();
@@ -20,6 +21,19 @@ mkdirSync(OUT_DIR, { recursive: true });
 // ── Jobs en mémoire (même pattern que routes/mashup.js et routes/clipEditor.js) ──
 const jobs = new Map();
 const updateJob = (id, patch) => jobs.set(id, { ...(jobs.get(id) || {}), ...patch, updatedAt: Date.now() });
+registerJobCleanup(jobs, { label: "[stems]" });
+
+// ── Verrou anti-doublon (généralisé lors de l'audit de juillet 2026, même
+// principe que routes/mashup.js/analyze.js) — chaque job écrit dans son
+// propre dossier (OUT_DIR/<jobId>/), donc pas de collision d'ÉCRITURE
+// possible, mais sans verrou un double-clic sur "Extraire voix"/"Extraire
+// instru" relance quand même une 2e séparation Demucs COMPLÈTE en parallèle
+// pour le même morceau (GPU gaspillé en double) le temps que la 1ère finisse.
+const activeStems = new Map(); // videoId -> jobId
+const isJobActive = (id) => {
+  const job = jobs.get(id);
+  return !!job && job.status !== "done" && job.status !== "error";
+};
 
 router.get("/:id/status", (req, res) => {
   const job = jobs.get(req.params.id);
@@ -67,12 +81,20 @@ router.post("/start", async (req, res) => {
   const { videoId, title = "track" } = req.body;
   if (!videoId) return res.status(400).json({ error: "videoId requis" });
 
+  // Verrou anti-doublon — cf. commentaire sur activeStems plus haut.
+  const runningJobId = activeStems.get(videoId);
+  if (runningJobId && isJobActive(runningJobId)) {
+    console.log(`[stems] ${videoId} : extraction déjà en cours (job ${runningJobId}) — pas de second lancement`);
+    return res.json({ jobId: runningJobId });
+  }
+
   const jobId = uuidv4();
   const jobTmp = join(TMP_DIR, `stems-${jobId}`);
   const jobOut = join(OUT_DIR, jobId);
   mkdirSync(jobTmp, { recursive: true });
   mkdirSync(jobOut, { recursive: true });
 
+  activeStems.set(videoId, jobId);
   res.json({ jobId });
   updateJob(jobId, { status: "running", title });
 
@@ -178,6 +200,8 @@ router.post("/start", async (req, res) => {
       updateJob(jobId, { status: "error", message: err.message });
     } finally {
       await rm(jobTmp, { recursive: true, force: true }).catch(() => {});
+      // Libère le verrou (uniquement si c'est toujours CE job qui le détient).
+      if (activeStems.get(videoId) === jobId) activeStems.delete(videoId);
     }
   })();
 });

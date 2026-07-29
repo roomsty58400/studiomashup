@@ -45,6 +45,7 @@ import {
   resolveOutputPath, normalizeStemMode, nonVocalPartsForMode,
   parseBeatTimes, parseStructure, snapToMeasureBoundary, pickBestSegmentPair,
 } from "../services/trackPreparation.js";
+import { registerJobCleanup } from "../services/jobCleanup.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const router = express.Router();
@@ -55,6 +56,18 @@ mkdirSync(outputsDir, { recursive: true });
 // isolée, cf. commentaire d'en-tête) plutôt que partagée. ──────────────────
 const jobs = new Map();
 const updateJob = (id, patch) => jobs.set(id, { ...(jobs.get(id) || {}), ...patch, updatedAt: Date.now() });
+registerJobCleanup(jobs, { label: "[mashup-multi]" });
+
+// ── Verrou anti-doublon (même principe que routes/mashup.js/analyze.js,
+// généralisé lors de l'audit de juillet 2026) — un double-clic ou 2 onglets
+// avec la même combinaison de pistes lançait 2 pipelines Demucs/ffmpeg
+// complets en parallèle. Clé = ensemble des pistes (ordre non significatif
+// pour la collision) + mode de stems + répartition + crossfade.
+const activeMulti = new Map(); // lockKey -> jobId
+const isJobActive = (id) => {
+  const job = jobs.get(id);
+  return !!job && job.status !== "done" && job.status !== "error";
+};
 
 router.get("/:id/status", (req, res) => {
   const job = jobs.get(req.params.id);
@@ -138,9 +151,20 @@ router.post("/", async (req, res) => {
     }
   }
 
+  // Verrou anti-doublon — cf. commentaire sur activeMulti plus haut. trackIds
+  // triés : l'ordre de saisie ne change rien à la collision (même Demucs/même
+  // sortie visées quel que soit l'ordre des pistes dans la requête).
+  const lockKey = `${[...trackIds].sort().join(",")}:${stemMode}:${JSON.stringify(stemSelection)}:${crossfade}`;
+  const runningJobId = activeMulti.get(lockKey);
+  if (runningJobId && isJobActive(runningJobId)) {
+    console.log(`[mashupMulti] ${lockKey} : génération déjà en cours (job ${runningJobId}) — pas de second lancement`);
+    return res.json({ jobId: runningJobId });
+  }
+
   const jobId = uuidv4();
   const tmpDir = join(__dirname, "../tmp", jobId);
   mkdirSync(tmpDir, { recursive: true });
+  activeMulti.set(lockKey, jobId);
   updateJob(jobId, { status: "running", step: 0, label: "Préparation" });
   res.json({ jobId });
 
@@ -291,6 +315,8 @@ router.post("/", async (req, res) => {
       await rm(tmpDir, { recursive: true, force: true }).catch((err) => {
         console.warn(`[mashupMulti] ${jobId} : nettoyage tmpDir incomplet (${err.code || err.message}) — sans conséquence sur les livrables déjà produits dans data/outputs.`);
       });
+      // Libère le verrou (uniquement si c'est toujours CE job qui le détient).
+      if (activeMulti.get(lockKey) === jobId) activeMulti.delete(lockKey);
     }
   })();
 });

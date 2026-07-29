@@ -25,6 +25,7 @@ import {
   parseBeatTimes, parseStructure, parseDrops, deriveHighlightTimes, findHighEnergyOffset,
   snapToMeasureBoundary, pickBestSegmentPair,
 } from "../services/trackPreparation.js";
+import { registerJobCleanup } from "../services/jobCleanup.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const router = express.Router();
@@ -84,6 +85,7 @@ router.post("/upload", upload.single("audio"), (req, res) => {
 });
 
 const jobs = new Map();
+registerJobCleanup(jobs, { label: "[mashup]" });
 
 // ── Verrou anti-doublon (même principe que routes/analyze.js, audit juillet
 // 2026) ── Sans ça, un double-clic sur "Générer" (ou 2 onglets sur la même
