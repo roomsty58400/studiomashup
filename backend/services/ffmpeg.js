@@ -196,6 +196,140 @@ export const mixStemsCustom = async (stems, output) => {
   return output;
 };
 
+// ── Effet de genre (cadre FadrMacheUp) ────────────────────────────────────
+// Retour utilisateur (30/07) : une vraie génération audio IA par genre (testé
+// via ElevenLabs Music) coûte trop cher pour un usage perso régulier (~0,15$/
+// minute générée). Repli sur l'option gratuite envisagée en amont : de VRAIS
+// effets audio ffmpeg (EQ, compression, saturation, largeur stéréo, écho,
+// parfois pitch) qui changent audiblement le TIMBRE du mix existant, par
+// genre — pas une nouvelle composition, une coloration du morceau de
+// l'utilisateur. Rendu quasi instantané (un seul passage ffmpeg, pas d'appel
+// réseau externe), zéro coût, zéro clé API à configurer.
+//
+// Chaque preset ne définit QUE ce qui s'écarte du neutre — un compresseur +
+// limiteur final est toujours appliqué (glue + garde-fou anti-écrêtage,
+// cf. acompressor/alimiter), les autres étages (EQ/saturation/largeur/écho/
+// pitch) sont optionnels par genre.
+export const GENRE_DSP_PRESETS = {
+  "R&B": {
+    eq: [{ f: 120, g: 3, width: 1 }, { f: 3000, g: 2, width: 1.2 }],
+    compressor: { threshold: 0.15, ratio: 3, attack: 20, release: 200, makeup: 1.6 },
+  },
+  "Rock": {
+    eq: [{ f: 90, g: -1.5, width: 1 }, { f: 2500, g: 4, width: 1 }, { f: 6000, g: 2, width: 1 }],
+    crusher: { bits: 14 },
+    compressor: { threshold: 0.12, ratio: 4, attack: 8, release: 120, makeup: 1.8 },
+  },
+  "Trap": {
+    eq: [{ f: 60, g: 6, width: 0.8 }, { f: 150, g: -2, width: 1 }, { f: 8000, g: 2, width: 1 }],
+    compressor: { threshold: 0.1, ratio: 5, attack: 5, release: 100, makeup: 1.8 },
+  },
+  "Drill": {
+    eq: [{ f: 55, g: 6, width: 0.8 }, { f: 200, g: -2, width: 1 }],
+    compressor: { threshold: 0.08, ratio: 6, attack: 3, release: 80, makeup: 2 },
+  },
+  "Hard Techno": {
+    eq: [{ f: 50, g: 4, width: 0.8 }, { f: 3000, g: 3, width: 1 }],
+    crusher: { bits: 10 },
+    compressor: { threshold: 0.06, ratio: 8, attack: 2, release: 60, makeup: 2.2 },
+  },
+  "Future Garage": {
+    eq: [{ f: 100, g: 2, width: 1 }, { f: 9000, g: -4, width: 1 }],
+    echo: { inGain: 0.8, outGain: 0.7, delay: 90, decay: 0.25 },
+    compressor: { threshold: 0.2, ratio: 2.5, attack: 25, release: 250, makeup: 1.3 },
+  },
+  "Disco House": {
+    eq: [{ f: 100, g: 3, width: 1 }, { f: 4000, g: 3, width: 1 }],
+    widen: 1.35,
+    compressor: { threshold: 0.15, ratio: 3, attack: 10, release: 150, makeup: 1.6 },
+  },
+  "Deep House": {
+    eq: [{ f: 90, g: 3, width: 1 }, { f: 8000, g: -3, width: 1 }],
+    widen: 1.2,
+    compressor: { threshold: 0.18, ratio: 2.5, attack: 15, release: 200, makeup: 1.4 },
+  },
+  "Minimal House": {
+    eq: [{ f: 3000, g: -2, width: 1 }],
+    widen: 0.7,
+    compressor: { threshold: 0.15, ratio: 4, attack: 10, release: 150, makeup: 1.5 },
+  },
+  "Tech House": {
+    eq: [{ f: 70, g: 3, width: 0.9 }, { f: 3500, g: 2.5, width: 1 }],
+    compressor: { threshold: 0.12, ratio: 4, attack: 8, release: 130, makeup: 1.7 },
+  },
+  "Drum and Bass": {
+    eq: [{ f: 55, g: 5, width: 0.8 }, { f: 9000, g: 3, width: 1 }],
+    compressor: { threshold: 0.08, ratio: 5, attack: 4, release: 90, makeup: 2 },
+  },
+  "Phonk": {
+    eq: [{ f: 60, g: 6, width: 0.8 }, { f: 5000, g: -3, width: 1 }],
+    crusher: { bits: 9 },
+    pitchSemitones: -2,
+    compressor: { threshold: 0.1, ratio: 4, attack: 10, release: 150, makeup: 1.8 },
+  },
+};
+
+export const applyGenreEffect = async (inputPath, genreKey, output) => {
+  const preset = GENRE_DSP_PRESETS[genreKey];
+  if (!preset) throw new Error(`Genre inconnu : "${genreKey}".`);
+
+  const rbAvailable = preset.pitchSemitones ? await hasRubberband() : false;
+  const stages = [];
+  let label = "0:a";
+  let stageIdx = 0;
+  const nextLabel = () => `gfx${stageIdx++}`;
+
+  for (const band of preset.eq || []) {
+    const out = nextLabel();
+    stages.push(`[${label}]equalizer=f=${band.f}:width_type=o:width=${band.width}:g=${band.g}[${out}]`);
+    label = out;
+  }
+
+  if (preset.crusher) {
+    const out = nextLabel();
+    stages.push(`[${label}]acrusher=bits=${preset.crusher.bits}:mode=log:aa=1[${out}]`);
+    label = out;
+  }
+
+  if (preset.widen) {
+    const out = nextLabel();
+    stages.push(`[${label}]extrastereo=m=${preset.widen}[${out}]`);
+    label = out;
+  }
+
+  if (preset.echo) {
+    const out = nextLabel();
+    const { inGain, outGain, delay, decay } = preset.echo;
+    stages.push(`[${label}]aecho=${inGain}:${outGain}:${delay}:${decay}[${out}]`);
+    label = out;
+  }
+
+  // Pitch (ex: Phonk, léger "slowed") — rubberband si dispo (qualité, garde
+  // le tempo inchangé), sinon repli asetrate+atempo (même pattern que le
+  // reste de ce fichier, cf. alignAndCombineStems plus haut).
+  if (preset.pitchSemitones) {
+    const ratio = Math.pow(2, preset.pitchSemitones / 12);
+    const out = nextLabel();
+    if (rbAvailable) {
+      stages.push(`[${label}]rubberband=pitch=${ratio.toFixed(6)}:tempo=1[${out}]`);
+    } else {
+      stages.push(`[${label}]asetrate=44100*${ratio.toFixed(6)},aresample=44100,atempo=${(1 / ratio).toFixed(6)}[${out}]`);
+    }
+    label = out;
+  }
+
+  const c = preset.compressor || {};
+  const out = nextLabel();
+  stages.push(
+    `[${label}]acompressor=threshold=${c.threshold ?? 0.15}:ratio=${c.ratio ?? 3}:attack=${c.attack ?? 15}:release=${c.release ?? 150}:makeup=${c.makeup ?? 1.5},alimiter=limit=0.95[${out}]`
+  );
+  label = out;
+
+  const cmd = `ffmpeg -i "${inputPath}" -filter_complex "${stages.join(";")}" -map "[${label}]" -ar 44100 "${output}" -y`;
+  await execAsync(cmd, { timeout: 120000 });
+  return output;
+};
+
 // Convertit le réglage crossfade (0-1, balance live) en durée réelle de transition (secondes).
 // 0 → 3s (transition courte), 1 → 12s (transition longue/progressive)
 const crossfadeToDuration = (crossfade) => Math.round(3 + Math.min(Math.max(crossfade, 0), 1) * 9);

@@ -4,15 +4,13 @@ import { v4 as uuidv4 } from "uuid";
 import { join, dirname, extname } from "path";
 import { fileURLToPath } from "url";
 import { existsSync, mkdirSync } from "fs";
-import { rename, rm, writeFile } from "fs/promises";
+import { rename, rm } from "fs/promises";
 import { downloadAudio, downloadVideo } from "../services/ytdlp.js";
-import { extractAudio, exportMP3, combineTracks, mixStemsCustom } from "../services/ffmpeg.js";
+import { extractAudio, exportMP3, combineTracks, mixStemsCustom, applyGenreEffect, GENRE_DSP_PRESETS } from "../services/ffmpeg.js";
 import { separateStemsFull } from "../services/demucs.js";
 import { dereverbVocals } from "../services/dereverb.js";
 import { recomposeReplace, combineStems, stripAudio } from "../services/clipEditor.js";
 import { registerJobCleanup } from "../services/jobCleanup.js";
-import { composeMusic } from "../services/elevenlabsMusic.js";
-import { callGemini } from "./prompt.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const router = express.Router();
@@ -411,70 +409,64 @@ router.post("/:id/remix-export", async (req, res) => {
   }
 });
 
-// ── Cadre FadrMacheUp : génération IA au clic sur un genre ──
-// Contrairement à /remix-export (mixdown ffmpeg des stems existants) et à
-// /api/prompt/remix (texte à coller dans Suno/Udio), cette route appelle une
-// VRAIE API de génération audio (ElevenLabs Music) et renvoie directement un
-// fichier — c'est la réponse à la demande explicite de l'utilisateur ("je
-// voulais que ça génère l'effet du genre sur le morceau, comme dans le
-// concept de Fadr"). Écart assumé par rapport à Fadr (cf. commentaire dans
-// services/elevenlabsMusic.js) : pas d'API audio-to-audio publique
-// accessible en 2026 (Suno/Udio), donc on génère un morceau NEUF inspiré du
-// genre + de l'ambiance de la piste d'origine plutôt que de transformer
-// littéralement l'audio existant.
-// Verrou anti-double-clic : chaque génération est facturée (~0,15$/min chez
-// ElevenLabs) — un double-submit accidentel ne doit pas déclencher 2 appels
-// payants pour le même job.
-const activeGenreGenerations = new Set();
-const GENRE_PREVIEW_DURATION_MS = 45000; // aperçu 45s, pas la piste complète (coût/latence maîtrisés)
-
-router.post("/:id/genre-generate", async (req, res) => {
+// ── Cadre FadrMacheUp : effet de genre (gratuit, sans IA externe) ──
+// Remplace une 1ère version basée sur ElevenLabs Music (vraie génération IA,
+// mais ~0,15$/minute générée — trop cher pour un usage perso régulier,
+// retour utilisateur 30/07). Repli sur de VRAIS effets audio ffmpeg (EQ,
+// compression, saturation, largeur stéréo, écho, parfois pitch — cf.
+// GENRE_DSP_PRESETS/applyGenreEffect, services/ffmpeg.js) appliqués au mix
+// des stems EXISTANTS du clip : pas une nouvelle composition, une vraie
+// coloration audible du morceau de l'utilisateur, gratuite et quasi
+// instantanée (un seul passage ffmpeg, zéro appel réseau externe).
+// Réutilise les mêmes réglages mute/solo/volume/pan que /remix-export (repris
+// tels quels si fournis, neutres sinon) : l'effet de genre s'applique sur LE
+// mix que l'utilisateur est en train d'écouter, pas sur un mix par défaut
+// différent.
+router.post("/:id/genre-effect", async (req, res) => {
   const jobId = req.params.id;
   const job = jobs.get(jobId);
-  if (!job) return res.status(404).json({ error: "Job introuvable." });
+  if (!job || job.stemsStatus !== "done")
+    return res.status(400).json({ error: "Les stems de ce clip ne sont pas encore prêts." });
 
-  const { genre, title, channel } = req.body;
+  const { genre, stems: mixSettings } = req.body;
   if (!genre) return res.status(400).json({ error: "genre requis" });
+  if (!GENRE_DSP_PRESETS[genre]) return res.status(400).json({ error: `Genre inconnu : "${genre}".` });
 
-  if (activeGenreGenerations.has(jobId)) {
-    return res.status(409).json({ error: "Une génération est déjà en cours pour ce clip — patiente qu'elle se termine." });
+  const jobOut = join(OUT_DIR, jobId);
+  const STEM_KEYS = ["vocals", "drums", "bass", "other"];
+  const stemsForMix = [];
+  for (const key of STEM_KEYS) {
+    const url = key === "vocals" ? (job.vocalsClean || job.vocals) : job[key];
+    if (!url) continue;
+    const filePath = join(jobOut, url.split("/").pop());
+    if (!existsSync(filePath)) continue;
+    const s = (mixSettings && mixSettings[key]) || {};
+    stemsForMix.push({
+      path: filePath,
+      volume: typeof s.volume === "number" ? s.volume : 1,
+      pan: typeof s.pan === "number" ? s.pan : 0,
+      mute: !!s.mute,
+      solo: !!s.solo,
+    });
   }
+  if (stemsForMix.length === 0)
+    return res.status(400).json({ error: "Aucun stem disponible pour ce clip." });
 
-  const geminiKey = process.env.GEMINI_API_KEY;
-  if (!geminiKey) {
-    return res.status(500).json({ error: "GEMINI_API_KEY manquante dans backend/.env (nécessaire pour rédiger le prompt envoyé à ElevenLabs)." });
-  }
-
-  activeGenreGenerations.add(jobId);
+  const tmpMixPath = join(TMP_DIR, `genrefx_mix_${jobId}_${Date.now()}.flac`);
   try {
-    const musicPrompt = await callGemini(geminiKey, `You write short, vivid text prompts for the ElevenLabs Music AI generator (a text-to-music model — your output is sent directly to the API, verbatim, never read by a human first).
+    await mixStemsCustom(stemsForMix, tmpMixPath);
 
-Source of inspiration (a song the user picked — draw mood/energy/instrumentation cues from it only, never copy lyrics or melody):
-Title: ${title || job.title || "unknown"}
-Artist/Channel: ${channel || "unknown"}
-
-Target genre: ${genre}
-
-Write ONE descriptive paragraph (2-4 sentences, under 350 characters) for a NEW ${genre} track inspired by the mood/energy of the source song above. Include specific instrumentation typical of ${genre}, tempo/feel, production character, and whether it naturally has vocals for ${genre} (say "instrumental" if not).
-
-Rules:
-- Write in English.
-- Natural flowing prose, not a tagged/structured list.
-- Output ONLY the paragraph, no intro, no quotes, no markdown.`);
-
-    const audioBuf = await composeMusic({ prompt: musicPrompt, durationMs: GENRE_PREVIEW_DURATION_MS });
-
-    const jobOut = join(OUT_DIR, jobId);
     const safeGenre = genre.replace(/[^a-z0-9]+/gi, "_").toLowerCase();
-    const outName = `genre_${safeGenre}_${Date.now()}.mp3`;
-    await writeFile(join(jobOut, outName), audioBuf);
+    const outName = `genre_${safeGenre}_${Date.now()}.flac`;
+    const outPath = join(jobOut, outName);
+    await applyGenreEffect(tmpMixPath, genre, outPath);
 
-    res.json({ url: `/outputs/clip-editor/${jobId}/${outName}`, prompt: musicPrompt });
+    res.json({ url: `/outputs/clip-editor/${jobId}/${outName}` });
   } catch (err) {
-    console.error(`❌ [clip-editor] genre-generate ${jobId} (${genre}) échoué :`, err.message);
+    console.error(`❌ [clip-editor] genre-effect ${jobId} (${genre}) échoué :`, err.message);
     res.status(500).json({ error: err.message });
   } finally {
-    activeGenreGenerations.delete(jobId);
+    rm(tmpMixPath, { force: true }).catch(() => {});
   }
 });
 

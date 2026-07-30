@@ -201,9 +201,4 @@ Rules:
   }
 });
 
-// Exportée pour routes/clipEditor.js (cadre FadrMacheUp) : réutilise le même
-// appel Gemini pour rédiger le prompt envoyé à l'API ElevenLabs Music, sans
-// dupliquer la logique de repli multi-modèles ci-dessus.
-export { callGemini };
-
 export default router;

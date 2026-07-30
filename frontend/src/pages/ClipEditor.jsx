@@ -637,13 +637,14 @@ function FadrMacheUpPanel({ job, jobId, video }) {
 
   const updateSetting = (key, patch) => setSettings(s => ({ ...s, [key]: { ...s[key], ...patch } }));
 
-  // Clic sur une pastille de genre : déclenche une VRAIE génération IA
-  // (ElevenLabs Music, cf. routes/clipEditor.js /:id/genre-generate) — un
-  // morceau neuf dans le genre choisi, inspiré de l'ambiance de la piste
-  // d'origine (titre/chaîne), pas juste un réglage de volume local. Prend
-  // 30-90s (appel réseau + génération côté ElevenLabs) et coûte réellement
-  // (~0,11$ pour l'aperçu de 45s) — d'où le verrou anti-double-clic pendant
-  // qu'une génération est déjà en cours.
+  // Clic sur une pastille de genre : applique un VRAI effet audio ffmpeg
+  // (EQ/compression/saturation/écho/pitch selon le genre — cf.
+  // GENRE_DSP_PRESETS/applyGenreEffect, services/ffmpeg.js) sur le mix actuel
+  // des 4 stems. Repli gratuit (30/07) après une 1ère version basée sur une
+  // vraie génération IA (ElevenLabs Music) jugée trop chère pour un usage
+  // perso régulier. Envoie les réglages mute/solo/volume/pan en cours
+  // (`settings`) pour que l'effet s'applique sur CE que l'utilisateur écoute
+  // déjà, pas un mix neutre différent.
   const handleGenreClick = async (g) => {
     if (genreGenerating) return;
     setGenre(g);
@@ -651,9 +652,9 @@ function FadrMacheUpPanel({ job, jobId, video }) {
     setGenreError(null);
     setGenreResult(null);
     try {
-      const res = await fetch(`${API}/api/clip-editor/${jobId}/genre-generate`, {
+      const res = await fetch(`${API}/api/clip-editor/${jobId}/genre-effect`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ genre: g, title: video?.title, channel: video?.channel }),
+        body: JSON.stringify({ genre: g, stems: settings }),
       });
       const data = await res.json();
       if (data.url) setGenreResult({ url: data.url, genre: g });
@@ -730,7 +731,7 @@ function FadrMacheUpPanel({ job, jobId, video }) {
 
           <div style={{ marginTop: 16 }}>
             <div style={{ fontSize: 11, color: "var(--muted2)", marginBottom: 8, fontWeight: 700, letterSpacing: 0.5 }}>
-              GENRE — clique pour générer une piste IA (ElevenLabs Music) dans ce style, inspirée du morceau
+              GENRE — clique pour appliquer un vrai effet audio (EQ/compression/saturation) sur ton mix, façon genre choisi
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
               {GENRE_PRESETS.map(g => (
@@ -741,14 +742,14 @@ function FadrMacheUpPanel({ job, jobId, video }) {
                     background: genre === g ? "rgba(255,106,0,0.15)" : "rgba(255,255,255,0.03)",
                     color: genre === g ? "var(--orange)" : "var(--muted2)",
                     opacity: genreGenerating && genre !== g ? 0.5 : 1 }}>
-                  {genreGenerating && genre === g ? "⏳ Génération…" : g}
+                  {genreGenerating && genre === g ? "⏳ …" : g}
                 </button>
               ))}
             </div>
 
             {genreGenerating && (
               <div style={{ marginTop: 10, fontSize: 12, color: "var(--muted2)" }}>
-                ⏳ Génération IA en cours (ElevenLabs Music, ~30-90s)…
+                ⏳ Traitement audio en cours (quelques secondes)…
               </div>
             )}
             {genreError && (
@@ -761,11 +762,11 @@ function FadrMacheUpPanel({ job, jobId, video }) {
               <div style={{ marginTop: 12, background: "var(--surface2)", border: "1px solid rgba(255,106,0,0.25)",
                 borderRadius: 10, padding: 14 }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: "var(--orange)", marginBottom: 8 }}>
-                  🎵 Piste IA générée — genre {genreResult.genre}
+                  🎵 Mix — effet {genreResult.genre}
                 </div>
                 <audio src={`${API}${genreResult.url}`} controls style={{ width: "100%" }} />
                 <button type="button"
-                  onClick={() => triggerDownload(buildDownloadUrl(genreResult.url, `${sanitizeFilename(video?.title)} (IA ${genreResult.genre})`))}
+                  onClick={() => triggerDownload(buildDownloadUrl(genreResult.url, `${sanitizeFilename(video?.title)} (${genreResult.genre})`))}
                   style={{ display: "block", width: "100%", textAlign: "center", marginTop: 10, padding: "8px 0", borderRadius: 8,
                     background: "rgba(255,106,0,0.12)", border: "1px solid var(--orange)", color: "var(--orange)",
                     fontSize: 12, fontWeight: 800, cursor: "pointer" }}>
