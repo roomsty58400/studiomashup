@@ -468,6 +468,34 @@ const GENRE_PRESETS = [
   "Drum and Bass", "Phonk",
 ];
 
+// Réglage neutre — restauré par défaut sur chaque stem avant d'appliquer un
+// preset de genre (cf. GENRE_MIX_PRESETS ci-dessous), et quand on désélectionne.
+const NEUTRAL_STEM_SETTINGS = { volume: 1, pan: 0, mute: false, solo: false };
+
+// ── Presets de mix par genre — appliqués RÉELLEMENT au clic (volume/mute par
+// stem, pas juste un libellé texte) : chaque genre pousse en avant les stems
+// qui le caractérisent, façon point de départ "suggestion IA" évoqué dans le
+// spec Mashup Editor. Volontairement simple (pas de règles de placement/
+// tempo) — seuls les 4 leviers déjà exposés dans l'éditeur (volume/mute par
+// stem) sont utilisés, donc ce qui s'entend au clic correspond exactement à
+// ce que "Exporter le mix" produira. Seules les clés précisées ici s'écartent
+// du réglage neutre (cf. applyGenre) — pas de "pan" par genre, une bascule
+// stéréo par genre n'apporterait rien d'utile ici.
+const GENRE_MIX_PRESETS = {
+  "R&B": { vocals: { volume: 1.3 }, bass: { volume: 1.15 } },
+  "Rock": { drums: { volume: 1.2 }, other: { volume: 1.2 } },
+  "Trap": { bass: { volume: 1.4 }, drums: { volume: 1.2 }, vocals: { volume: 0.85 } },
+  "Drill": { drums: { volume: 1.3 }, bass: { volume: 1.3 }, other: { volume: 0.8 } },
+  "Hard Techno": { drums: { volume: 1.4 }, bass: { volume: 1.3 }, vocals: { mute: true }, other: { volume: 0.8 } },
+  "Future Garage": { other: { volume: 1.25 }, bass: { volume: 1.1 } },
+  "Disco House": { bass: { volume: 1.2 }, drums: { volume: 1.2 }, other: { volume: 1.15 } },
+  "Deep House": { bass: { volume: 1.2 }, other: { volume: 1.1 }, vocals: { volume: 0.9 } },
+  "Minimal House": { drums: { volume: 1.15 }, other: { volume: 0.75 }, vocals: { mute: true } },
+  "Tech House": { drums: { volume: 1.25 }, bass: { volume: 1.2 }, vocals: { volume: 0.85 } },
+  "Drum and Bass": { drums: { volume: 1.4 }, bass: { volume: 1.3 }, other: { volume: 0.8 } },
+  "Phonk": { bass: { volume: 1.4 }, drums: { volume: 1.15 }, vocals: { volume: 0.7 } },
+};
+
 function StemLane({ def, url, settings, onChange, hasSolo, level }) {
   const effectivelyOff = settings.mute || (hasSolo && !settings.solo);
   return (
@@ -629,6 +657,24 @@ function FadrMacheUpPanel({ job, jobId, video }) {
 
   const updateSetting = (key, patch) => setSettings(s => ({ ...s, [key]: { ...s[key], ...patch } }));
 
+  // Clic sur une pastille de genre : applique RÉELLEMENT le preset (volume/
+  // mute par stem, cf. GENRE_MIX_PRESETS) — s'entend tout de suite si "▶
+  // ÉCOUTER LE MIX" est déjà lancé — plutôt que de se contenter d'un
+  // libellé utilisé seulement au moment de générer un prompt. Un 2e clic sur
+  // la même pastille désélectionne et remet les 4 stems au réglage neutre.
+  const applyGenre = (g) => {
+    if (genre === g) {
+      setGenre(null);
+      setSettings(Object.fromEntries(STEM_DEFS.map(d => [d.key, { ...NEUTRAL_STEM_SETTINGS }])));
+      return;
+    }
+    setGenre(g);
+    const preset = GENRE_MIX_PRESETS[g] || {};
+    setSettings(Object.fromEntries(
+      STEM_DEFS.map(d => [d.key, { ...NEUTRAL_STEM_SETTINGS, ...(preset[d.key] || {}) }])
+    ));
+  };
+
   const handleExport = async () => {
     setExporting(true); setExportError(null); setExportResult(null);
     try {
@@ -695,11 +741,11 @@ function FadrMacheUpPanel({ job, jobId, video }) {
 
           <div style={{ marginTop: 16 }}>
             <div style={{ fontSize: 11, color: "var(--muted2)", marginBottom: 8, fontWeight: 700, letterSpacing: 0.5 }}>
-              GENRE (OPTIONNEL) — pour le prompt Suno/Udio
+              GENRE (OPTIONNEL) — clique pour appliquer un mix de départ (volume par stem) + alimenter le prompt Suno/Udio
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
               {GENRE_PRESETS.map(g => (
-                <button key={g} type="button" onClick={() => setGenre(genre === g ? null : g)}
+                <button key={g} type="button" onClick={() => applyGenre(g)}
                   style={{ padding: "5px 12px", borderRadius: 20, fontSize: 11, fontWeight: 700, cursor: "pointer",
                     border: `1px solid ${genre === g ? "var(--orange)" : "var(--border)"}`,
                     background: genre === g ? "rgba(255,106,0,0.15)" : "rgba(255,255,255,0.03)",
