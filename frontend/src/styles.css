@@ -361,6 +361,22 @@ body {
     repeating-linear-gradient(135deg, rgba(255,255,255,0.018) 0px, rgba(255,255,255,0.018) 1px, transparent 1px, transparent 9px),
     linear-gradient(160deg, rgba(170,255,0,0.05) 0%, var(--surface) 45%, #0a0a0a 100%);
 }
+/* Cadre FadrMacheUp (30/07) — identité visuelle distincte (orange) des 3
+   couleurs existantes cyan/magenta/vert, pour marquer que ce cadre remplace
+   les anciens ②/③ plutôt que d'en être un simple 4e du même genre. */
+.clip-frame-col.col-orange {
+  border: 2px solid rgba(255,106,0,0.55);
+  box-shadow:
+    0 0 0 1px rgba(255,106,0,0.12),
+    0 0 32px rgba(255,106,0,0.22),
+    0 0 80px rgba(255,106,0,0.08),
+    inset 0 0 40px rgba(255,106,0,0.05);
+  background:
+    radial-gradient(circle at 12% -6%, rgba(255,106,0,0.16) 0%, transparent 42%),
+    radial-gradient(circle at 105% 110%, rgba(255,106,0,0.08) 0%, transparent 50%),
+    repeating-linear-gradient(135deg, rgba(255,255,255,0.018) 0px, rgba(255,255,255,0.018) 1px, transparent 1px, transparent 9px),
+    linear-gradient(160deg, rgba(255,106,0,0.05) 0%, var(--surface) 45%, #0a0a0a 100%);
+}
 
 /* Coins accentués, comme .deck::before/::after */
 .clip-frame-col::before, .clip-frame-col::after {
@@ -375,6 +391,8 @@ body {
 .clip-frame-col.col-magenta::after  { bottom: -2px; right: -2px; width: 26px; height: 26px; border-bottom: 3px solid var(--magenta); border-right: 3px solid var(--magenta); border-radius: 0 0 14px 0; }
 .clip-frame-col.col-green::before { top: -2px; left: -2px; width: 26px; height: 26px; border-top: 3px solid var(--green); border-left: 3px solid var(--green); border-radius: 14px 0 0 0; }
 .clip-frame-col.col-green::after  { bottom: -2px; right: -2px; width: 26px; height: 26px; border-bottom: 3px solid var(--green); border-right: 3px solid var(--green); border-radius: 0 0 14px 0; }
+.clip-frame-col.col-orange::before { top: -2px; left: -2px; width: 26px; height: 26px; border-top: 3px solid var(--orange); border-left: 3px solid var(--orange); border-radius: 14px 0 0 0; }
+.clip-frame-col.col-orange::after  { bottom: -2px; right: -2px; width: 26px; height: 26px; border-bottom: 3px solid var(--orange); border-right: 3px solid var(--orange); border-radius: 0 0 14px 0; }
 
 /* En-tête façon Deck : pastille + libellé à gauche, chiffre géant à droite
    (équivalent du "DECK A" + grande lettre des Decks du Mixer). */
@@ -403,6 +421,8 @@ body {
 .col-magenta .clip-step-dot   { background: var(--magenta); box-shadow: 0 0 8px var(--magenta); }
 .col-green .clip-step-label   { color: var(--green); text-shadow: 0 0 14px rgba(170,255,0,0.45); }
 .col-green .clip-step-dot     { background: var(--green); box-shadow: 0 0 8px var(--green); }
+.col-orange .clip-step-label  { color: var(--orange); text-shadow: 0 0 14px rgba(255,106,0,0.45); }
+.col-orange .clip-step-dot    { background: var(--orange); box-shadow: 0 0 8px var(--orange); }
 
 .clip-step-num {
   font-family: 'Orbitron', sans-serif;

@@ -8,6 +8,11 @@ import { buildDownloadUrl, triggerDownload } from "../utils/download.js";
 
 const API = "http://localhost:3001";
 
+// Cadres ②/③ (transformation IA + recomposition) masqués à la demande
+// (30/07) — code conservé tel quel, juste pas rendu, pour pouvoir les
+// remettre facilement si besoin.
+const SHOW_STEPS_2_3 = false;
+
 // ── Route B : presets de styles cibles pour le remix audio-to-audio ──
 const STYLE_PRESETS = [
   "Cyberpunk synthwave",
@@ -445,6 +450,327 @@ function RemixPanel({ video, maxHeight }) {
   );
 }
 
+// ── Cadre FadrMacheUp (30/07) — remplace les anciens cadres ②/③, inspiré de
+// fadr.com/remix : 4 lanes de stems (voix/batterie/basse/autres) avec
+// mute/solo/volume/pan + activité en temps réel, un genre optionnel, et 2
+// actions distinctes — export d'un vrai mix (ffmpeg) et génération d'un
+// prompt Suno/Udio (réutilise /api/prompt/remix, cf. RemixPanel ci-dessus).
+const STEM_DEFS = [
+  { key: "vocals", icon: "🎤", label: "Voix" },
+  { key: "drums", icon: "🥁", label: "Batterie" },
+  { key: "bass", icon: "🎸", label: "Basse" },
+  { key: "other", icon: "🎹", label: "Autres" },
+];
+
+const GENRE_PRESETS = [
+  "R&B", "Rock", "Trap", "Drill", "Hard Techno", "Future Garage",
+  "Disco House", "Deep House", "Minimal House", "Tech House",
+  "Drum and Bass", "Phonk",
+];
+
+function StemLane({ def, url, settings, onChange, hasSolo, level }) {
+  const effectivelyOff = settings.mute || (hasSolo && !settings.solo);
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px",
+      background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 10,
+      opacity: url ? (effectivelyOff ? 0.45 : 1) : 0.35 }}>
+      <div style={{ fontSize: 20, width: 24, textAlign: "center", flexShrink: 0 }}>{def.icon}</div>
+      <div style={{ width: 62, flexShrink: 0 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: "white" }}>{def.label}</div>
+        {!url && <div style={{ fontSize: 10, color: "var(--muted2)" }}>indispo</div>}
+      </div>
+
+      <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+        <button type="button" disabled={!url} onClick={() => onChange({ mute: !settings.mute })}
+          title="Couper ce stem"
+          style={{ width: 24, height: 24, borderRadius: 6, fontSize: 10, fontWeight: 800,
+            cursor: url ? "pointer" : "default",
+            border: `1px solid ${settings.mute ? "#ff4444" : "var(--border)"}`,
+            background: settings.mute ? "rgba(255,68,68,0.18)" : "rgba(255,255,255,0.03)",
+            color: settings.mute ? "#ff6666" : "var(--muted2)" }}>M</button>
+        <button type="button" disabled={!url} onClick={() => onChange({ solo: !settings.solo })}
+          title="Isoler ce stem"
+          style={{ width: 24, height: 24, borderRadius: 6, fontSize: 10, fontWeight: 800,
+            cursor: url ? "pointer" : "default",
+            border: `1px solid ${settings.solo ? "var(--yellow)" : "var(--border)"}`,
+            background: settings.solo ? "rgba(255,204,0,0.18)" : "rgba(255,255,255,0.03)",
+            color: settings.solo ? "var(--yellow)" : "var(--muted2)" }}>S</button>
+      </div>
+
+      {/* Barre d'activité — niveau RMS en temps réel (AnalyserNode), remplie
+          uniquement pendant la lecture */}
+      <div style={{ flex: 1, minWidth: 36, height: 20, background: "#0a0a0a", borderRadius: 4,
+        border: "1px solid #1a1a1a", overflow: "hidden" }}>
+        <div style={{ height: "100%", width: `${effectivelyOff ? 0 : Math.round(level * 100)}%`,
+          background: "linear-gradient(90deg, var(--orange), var(--yellow))", transition: "width 80ms linear" }} />
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 3, width: 84, flexShrink: 0 }}>
+        <input type="range" min="0" max="1.5" step="0.01" value={settings.volume} disabled={!url}
+          onChange={e => onChange({ volume: parseFloat(e.target.value) })}
+          title={`Volume ${Math.round(settings.volume * 100)}%`} style={{ width: "100%" }} />
+        <input type="range" min="-1" max="1" step="0.01" value={settings.pan} disabled={!url}
+          onChange={e => onChange({ pan: parseFloat(e.target.value) })}
+          title={`Pan ${settings.pan.toFixed(2)}`} style={{ width: "100%" }} />
+      </div>
+    </div>
+  );
+}
+
+function FadrMacheUpPanel({ job, jobId, video }) {
+  const [settings, setSettings] = useState(() =>
+    Object.fromEntries(STEM_DEFS.map(d => [d.key, { volume: 1, pan: 0, mute: false, solo: false }])));
+  const [genre, setGenre] = useState(null);
+  const [playing, setPlaying] = useState(false);
+  const [levels, setLevels] = useState(() => Object.fromEntries(STEM_DEFS.map(d => [d.key, 0])));
+  const [exporting, setExporting] = useState(false);
+  const [exportResult, setExportResult] = useState(null);
+  const [exportError, setExportError] = useState(null);
+  const [promptLoading, setPromptLoading] = useState(false);
+  const [prompt, setPrompt] = useState(null);
+  const [promptError, setPromptError] = useState(null);
+  const [copied, setCopied] = useState(false);
+
+  const audioRefs = useRef({});
+  const audioCtxRef = useRef(null);
+  const nodesRef = useRef({});
+  const rafRef = useRef(null);
+
+  const stemsReady = job?.stemsStatus === "done";
+  const urls = {
+    vocals: job?.vocalsClean || job?.vocals,
+    drums: job?.drums,
+    bass: job?.bass,
+    other: job?.other,
+  };
+  const hasSolo = STEM_DEFS.some(d => settings[d.key]?.solo);
+
+  // Construit le graphe Web Audio une seule fois par jeu de stems dispo —
+  // GainNode + StereoPannerNode + AnalyserNode par stem : mute/solo/volume/
+  // pan s'entendent immédiatement (cf. useEffect suivant), et l'AnalyserNode
+  // alimente la barre d'activité de chaque lane. createMediaElementSource ne
+  // peut être appelé qu'une fois par <audio> — le try/catch protège un
+  // éventuel re-montage sans dupliquer le graphe.
+  useEffect(() => {
+    if (!stemsReady || !STEM_DEFS.every(d => urls[d.key])) return;
+    const ctx = audioCtxRef.current || new (window.AudioContext || window.webkitAudioContext)();
+    audioCtxRef.current = ctx;
+
+    for (const d of STEM_DEFS) {
+      const el = audioRefs.current[d.key];
+      if (!el || nodesRef.current[d.key]) continue;
+      try {
+        const source = ctx.createMediaElementSource(el);
+        const gain = ctx.createGain();
+        const panner = ctx.createStereoPanner();
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 256;
+        source.connect(gain);
+        gain.connect(panner);
+        panner.connect(analyser);
+        analyser.connect(ctx.destination);
+        nodesRef.current[d.key] = { gain, panner, analyser, data: new Uint8Array(analyser.frequencyBinCount) };
+      } catch {
+        // déjà connecté — ignoré (cf. commentaire ci-dessus)
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stemsReady, urls.vocals, urls.drums, urls.bass, urls.other]);
+
+  // Applique mute/solo/volume/pan en temps réel sur le graphe déjà construit.
+  useEffect(() => {
+    for (const d of STEM_DEFS) {
+      const n = nodesRef.current[d.key];
+      const s = settings[d.key];
+      if (!n || !s) continue;
+      const effectivelyOff = s.mute || (hasSolo && !s.solo);
+      n.gain.gain.value = effectivelyOff ? 0 : s.volume;
+      n.panner.pan.value = s.pan;
+    }
+  }, [settings, hasSolo]);
+
+  // Boucle d'affichage des barres d'activité (rAF) — seulement pendant la
+  // lecture, pour ne rien consommer le reste du temps.
+  useEffect(() => {
+    if (!playing) { setLevels(Object.fromEntries(STEM_DEFS.map(d => [d.key, 0]))); return; }
+    let alive = true;
+    const tick = () => {
+      if (!alive) return;
+      const next = {};
+      for (const d of STEM_DEFS) {
+        const n = nodesRef.current[d.key];
+        if (!n) { next[d.key] = 0; continue; }
+        n.analyser.getByteTimeDomainData(n.data);
+        let sum = 0;
+        for (let i = 0; i < n.data.length; i++) { const v = (n.data[i] - 128) / 128; sum += v * v; }
+        next[d.key] = Math.min(1, Math.sqrt(sum / n.data.length) * 3.2);
+      }
+      setLevels(next);
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => { alive = false; cancelAnimationFrame(rafRef.current); };
+  }, [playing]);
+
+  const togglePlay = () => {
+    if (audioCtxRef.current?.state === "suspended") audioCtxRef.current.resume();
+    const els = STEM_DEFS.map(d => audioRefs.current[d.key]).filter(Boolean);
+    if (playing) {
+      els.forEach(el => el.pause());
+      setPlaying(false);
+    } else {
+      // Recale tous les stems sur la même position avant de repartir, pour
+      // qu'ils restent synchronisés même après une pause/un seek individuel.
+      const t = els[0]?.currentTime || 0;
+      els.forEach(el => { el.currentTime = t; el.play().catch(() => {}); });
+      setPlaying(true);
+    }
+  };
+
+  const updateSetting = (key, patch) => setSettings(s => ({ ...s, [key]: { ...s[key], ...patch } }));
+
+  const handleExport = async () => {
+    setExporting(true); setExportError(null); setExportResult(null);
+    try {
+      const res = await fetch(`${API}/api/clip-editor/${jobId}/remix-export`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stems: settings }),
+      });
+      const data = await res.json();
+      if (data.url) setExportResult(data); else setExportError(data.error || "Erreur inconnue");
+    } catch (e) { setExportError("Erreur réseau : " + e.message); }
+    setExporting(false);
+  };
+
+  const handleGeneratePrompt = async () => {
+    setPromptLoading(true); setPromptError(null); setPrompt(null);
+    try {
+      const res = await fetch(`${API}/api/prompt/remix`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: video?.title, channel: video?.channel, targetStyle: genre || "libre, façon DJ set" }),
+      });
+      const data = await res.json();
+      if (data.prompt) setPrompt(data.prompt); else setPromptError(data.error || "Erreur inconnue");
+    } catch (e) { setPromptError("Erreur réseau : " + e.message); }
+    setPromptLoading(false);
+  };
+
+  const handleCopyPrompt = async () => {
+    const { ok } = await copyToClipboard(prompt || "");
+    if (ok) { setCopied(true); setTimeout(() => setCopied(false), 2000); }
+  };
+
+  return (
+    <div className="clip-frame-col col-orange">
+      <div className="clip-step-header">
+        <div className="clip-step-label"><span className="clip-step-dot" />FadrMacheUp — mixe et remixe par stem</div>
+      </div>
+
+      {!stemsReady ? (
+        <div className="clip-frame-placeholder">
+          {job
+            ? "⏳ Séparation en 4 stems en cours (voix/batterie/basse/autres)…"
+            : "Choisis et extrais d'abord un clip à gauche."}
+        </div>
+      ) : (
+        <>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {STEM_DEFS.map(d => (
+              <React.Fragment key={d.key}>
+                <audio ref={el => { audioRefs.current[d.key] = el; }}
+                  src={urls[d.key] ? `${API}${urls[d.key]}` : undefined}
+                  preload="auto" crossOrigin="anonymous" style={{ display: "none" }} />
+                <StemLane def={d} url={urls[d.key]} settings={settings[d.key]}
+                  onChange={patch => updateSetting(d.key, patch)} hasSolo={hasSolo} level={levels[d.key] || 0} />
+              </React.Fragment>
+            ))}
+          </div>
+
+          <button type="button" onClick={togglePlay}
+            style={{ marginTop: 12, width: "100%", padding: "9px 0", borderRadius: 8, border: "1px solid var(--orange)",
+              background: playing ? "var(--orange)" : "transparent", color: playing ? "#000" : "var(--orange)",
+              fontWeight: 800, fontSize: 13, cursor: "pointer", letterSpacing: 1 }}>
+            {playing ? "⏸ PAUSE" : "▶ ÉCOUTER LE MIX (aperçu temps réel)"}
+          </button>
+
+          <div style={{ marginTop: 16 }}>
+            <div style={{ fontSize: 11, color: "var(--muted2)", marginBottom: 8, fontWeight: 700, letterSpacing: 0.5 }}>
+              GENRE (OPTIONNEL) — pour le prompt Suno/Udio
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {GENRE_PRESETS.map(g => (
+                <button key={g} type="button" onClick={() => setGenre(genre === g ? null : g)}
+                  style={{ padding: "5px 12px", borderRadius: 20, fontSize: 11, fontWeight: 700, cursor: "pointer",
+                    border: `1px solid ${genre === g ? "var(--orange)" : "var(--border)"}`,
+                    background: genre === g ? "rgba(255,106,0,0.15)" : "rgba(255,255,255,0.03)",
+                    color: genre === g ? "var(--orange)" : "var(--muted2)" }}>
+                  {g}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+            <button className="primary-btn" style={{ flex: 1 }} disabled={exporting} onClick={handleExport}>
+              {exporting ? "⏳ Export en cours…" : "⬇ EXPORTER LE MIX"}
+            </button>
+            <button className="secondary-btn" style={{ flex: 1 }} disabled={promptLoading} onClick={handleGeneratePrompt}>
+              {promptLoading ? "…" : "✦ GÉNÉRER UN PROMPT"}
+            </button>
+          </div>
+
+          {exportError && (
+            <div style={{ marginTop: 10, padding: "8px 12px", background: "rgba(255,68,68,0.08)",
+              border: "1px solid #ff444433", borderRadius: 6, color: "#ff6666", fontSize: 13 }}>
+              {exportError}
+            </div>
+          )}
+          {exportResult && (
+            <button type="button"
+              onClick={() => triggerDownload(buildDownloadUrl(exportResult.url, `${sanitizeFilename(video?.title)} (mix FadrMacheUp)`))}
+              style={{ display: "block", width: "100%", textAlign: "center", marginTop: 10, padding: "9px 0", borderRadius: 8,
+                background: "rgba(255,106,0,0.12)", border: "1px solid var(--orange)", color: "var(--orange)",
+                fontSize: 12, fontWeight: 800, cursor: "pointer" }}>
+              ✅ Mix prêt — ⬇ Télécharger
+            </button>
+          )}
+
+          {promptError && (
+            <div style={{ marginTop: 10, padding: "8px 12px", background: "rgba(255,68,68,0.08)",
+              border: "1px solid #ff444433", borderRadius: 6, color: "#ff6666", fontSize: 13 }}>
+              {promptError}
+            </div>
+          )}
+          {prompt && (
+            <div style={{ marginTop: 12, background: "var(--surface2)", border: "1px solid rgba(255,106,0,0.25)",
+              borderRadius: 10, padding: 14 }}>
+              <pre style={{ background: "#0a0a0a", border: "1px solid #1a1a1a", borderRadius: 8, padding: 12,
+                fontSize: 12, lineHeight: 1.6, color: "#ccc", whiteSpace: "pre-wrap", fontFamily: "Inter,sans-serif",
+                maxHeight: 220, overflowY: "auto", margin: 0 }}>
+                {prompt}
+              </pre>
+              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                <button onClick={handleCopyPrompt}
+                  style={{ flex: 1, padding: "8px 12px", borderRadius: 8, border: "1px solid var(--orange)",
+                    background: copied ? "var(--orange)" : "transparent", color: copied ? "#000" : "var(--orange)",
+                    fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                  {copied ? "✓ COPIÉ !" : "📋 COPIER LE PROMPT"}
+                </button>
+                <a href="https://suno.com" target="_blank" rel="noreferrer"
+                  style={{ padding: "8px 12px", borderRadius: 8, border: "1px solid #333", color: "#999",
+                    fontSize: 12, fontWeight: 700, textDecoration: "none" }}>🎵 SUNO ↗</a>
+                <a href="https://udio.com" target="_blank" rel="noreferrer"
+                  style={{ padding: "8px 12px", borderRadius: 8, border: "1px solid #333", color: "#999",
+                    fontSize: 12, fontWeight: 700, textDecoration: "none" }}>🎵 UDIO ↗</a>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function ClipEditor() {
   const [selectedVideo, setSelectedVideo] = useState(null);
   const [jobId, setJobId] = useState(null);
@@ -711,7 +1037,11 @@ export default function ClipEditor() {
         </div>
 
         {/* Cadre principal : étapes ① et ② côte à côte, pour voir tout le début du parcours d'un coup d'œil */}
-        <div className="clip-frame">
+        {/* .clip-frame est une grille à 3 colonnes fixes (styles.css) — avec
+            ②/③ remplacés par le grand cadre FadrMacheUp, on repasse à 2
+            colonnes (① plus étroit, FadrMacheUp plus large) au lieu des 3
+            tiers d'origine. */}
+        <div className="clip-frame" style={!SHOW_STEPS_2_3 ? { gridTemplateColumns: "0.85fr 2fr" } : undefined}>
           {/* Colonne gauche — Étape 1 */}
           <div className="clip-frame-col col-cyan">
             <div className="clip-step-header">
@@ -833,6 +1163,7 @@ export default function ClipEditor() {
             )}
           </div>
 
+          {SHOW_STEPS_2_3 && (<>
           {/* Colonne droite — Étape 2 */}
           <div className="clip-frame-col col-magenta">
             <div className="clip-step-header">
@@ -1033,6 +1364,11 @@ export default function ClipEditor() {
               </div>
             )}
           </div>
+          </>)}
+
+          {!SHOW_STEPS_2_3 && (
+            <FadrMacheUpPanel job={job} jobId={jobId} video={selectedVideo} />
+          )}
         </div>
       </div>
 

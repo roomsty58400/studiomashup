@@ -163,6 +163,39 @@ export const getCachedInstrumental = async (...stemPaths) => {
   return cachedPath;
 };
 
+// ── Mixdown "mix perso" (cadre FadrMacheUp, ClipEditor) ──────────────────
+// Recombine N stems déjà séparés en un seul export audio, pondéré par les
+// réglages mute/solo/volume/pan choisis par l'utilisateur — pas de
+// génération IA, un simple mixage ffmpeg des pistes déjà sur le disque.
+// `stems` : [{ path, volume (0-4, 1=neutre), pan (-1..1, 0=centré), mute,
+// solo }]. Si au moins un stem est solo=true, seuls les stems solo sont
+// inclus (comportement console de mixage classique) ; les autres se
+// comportent alors comme mute pour cet export, qu'ils soient mute=true ou non.
+// Le pan utilise une loi simple (gain linéaire par canal, pas de loi -3dB
+// constant-power) : suffisant pour un outil perso, pas un mastering.
+export const mixStemsCustom = async (stems, output) => {
+  const hasSolo = stems.some(s => s.solo);
+  const active = stems.filter(s => !s.mute && (!hasSolo || s.solo));
+  if (active.length === 0) {
+    throw new Error("Aucun stem actif (tout est coupé/muet) — impossible d'exporter un mix vide.");
+  }
+
+  const inputs = active.map(s => `-i "${s.path}"`).join(" ");
+  const panStages = active.map((s, i) => {
+    const vol = Math.max(0, Math.min(4, Number(s.volume) ?? 1));
+    const pan = Math.max(-1, Math.min(1, Number(s.pan) ?? 0));
+    const leftGain = (pan <= 0 ? 1 : 1 - pan) * vol;
+    const rightGain = (pan >= 0 ? 1 : 1 + pan) * vol;
+    return `[${i}:a]pan=stereo|c0=${leftGain.toFixed(4)}*c0|c1=${rightGain.toFixed(4)}*c1[s${i}]`;
+  });
+  const mixInputs = active.map((_, i) => `[s${i}]`).join("");
+  const filterComplex = `${panStages.join(";")};${mixInputs}amix=inputs=${active.length}:duration=longest:dropout_transition=0,alimiter=limit=0.95[out]`;
+
+  const cmd = `ffmpeg ${inputs} -filter_complex "${filterComplex}" -map "[out]" -ar 44100 "${output}" -y`;
+  await execAsync(cmd, { timeout: 120000 });
+  return output;
+};
+
 // Convertit le réglage crossfade (0-1, balance live) en durée réelle de transition (secondes).
 // 0 → 3s (transition courte), 1 → 12s (transition longue/progressive)
 const crossfadeToDuration = (crossfade) => Math.round(3 + Math.min(Math.max(crossfade, 0), 1) * 9);

@@ -6,8 +6,8 @@ import { fileURLToPath } from "url";
 import { existsSync, mkdirSync } from "fs";
 import { rename, rm } from "fs/promises";
 import { downloadAudio, downloadVideo } from "../services/ytdlp.js";
-import { extractAudio, exportMP3 } from "../services/ffmpeg.js";
-import { separateStems } from "../services/demucs.js";
+import { extractAudio, exportMP3, combineTracks, mixStemsCustom } from "../services/ffmpeg.js";
+import { separateStemsFull } from "../services/demucs.js";
 import { dereverbVocals } from "../services/dereverb.js";
 import { recomposeReplace, combineStems, stripAudio } from "../services/clipEditor.js";
 import { registerJobCleanup } from "../services/jobCleanup.js";
@@ -83,21 +83,38 @@ const runSeparation = async (jobId) => {
   updateJob(jobId, { stemsStatus: "running" });
   const stemsTmp = join(TMP_DIR, `${jobId}-stems`);
   try {
-    const { vocals, instrumental } = await separateStems(sourceWav, stemsTmp);
-    const vocalsName = "vocals" + extname(vocals);
-    const instruName = "instrumental" + extname(instrumental);
-    const vocalsDest = join(jobOut, vocalsName);
-    // rename() : stemsTmp est jetable (supprimé dans le "finally" ci-dessous),
-    // vocals/instrumental n'y sont plus utilisés après ce déplacement.
-    await rename(vocals, vocalsDest);
-    await rename(instrumental, join(jobOut, instruName));
+    // 4 stems (voix/batterie/basse/autres) — même appel que le studio
+    // principal (routes/analyze.js), au lieu du 2-stems historique de
+    // ClipEditor : nécessaire pour le cadre FadrMacheUp (mixage indépendant
+    // par stem). L'instrumental complet est ensuite DÉRIVÉ (drums+bass+other,
+    // même principe que getCachedInstrumental ailleurs dans l'app) pour que
+    // la recomposition voix/instru existante (étape ②/③, /recompose)
+    // continue de fonctionner à l'identique, sans appel Demucs 2-stems
+    // séparé.
+    const separated = await separateStemsFull(sourceWav, stemsTmp, 4);
+    const destPaths = {};
+    for (const key of ["vocals", "drums", "bass", "other"]) {
+      const destName = `${key}${extname(separated[key])}`;
+      const destPath = join(jobOut, destName);
+      // rename() : stemsTmp est jetable (supprimé dans le "finally" ci-dessous).
+      await rename(separated[key], destPath);
+      destPaths[key] = destPath;
+    }
+
+    const instruPath = join(jobOut, "instrumental.flac");
+    await combineTracks([destPaths.drums, destPaths.bass, destPaths.other], instruPath);
+
+    const urlFor = (p) => `/outputs/clip-editor/${jobId}/${p.split(/[\\/]/).pop()}`;
     updateJob(jobId, {
       stemsStatus: "done",
       dereverbStatus: "idle",
-      vocals: `/outputs/clip-editor/${jobId}/${vocalsName}`,
-      instrumental: `/outputs/clip-editor/${jobId}/${instruName}`,
+      vocals: urlFor(destPaths.vocals),
+      drums: urlFor(destPaths.drums),
+      bass: urlFor(destPaths.bass),
+      other: urlFor(destPaths.other),
+      instrumental: urlFor(instruPath),
     });
-    console.log(`✅ [clip-editor] séparation ${jobId} terminée`);
+    console.log(`✅ [clip-editor] séparation 4 stems ${jobId} terminée`);
 
     // Nettoyage écho/réverb de la voix, en tâche de fond (masqué, non
     // bloquant) : la voix brute reste utilisable/téléchargeable tout de
@@ -343,6 +360,52 @@ router.post("/:id/recompose", upload.single("audio"), async (req, res) => {
   } finally {
     rm(newAudioPath, { force: true }).catch(() => {});
     if (combinedTmp) rm(combinedTmp, { force: true }).catch(() => {});
+  }
+});
+
+// ── Cadre FadrMacheUp : export "mix perso" ──
+// Mixdown RÉEL (ffmpeg) des 4 stems déjà séparés, pondéré par les réglages
+// mute/solo/volume/pan choisis dans l'éditeur — pas de génération IA, cf.
+// mixStemsCustom (services/ffmpeg.js). Distinct du bouton "Générer un
+// prompt" (/api/prompt/remix, existant) qui lui prépare un texte pour
+// Suno/Udio plutôt que de produire un fichier audio directement.
+router.post("/:id/remix-export", async (req, res) => {
+  const jobId = req.params.id;
+  const job = jobs.get(jobId);
+  if (!job || job.stemsStatus !== "done")
+    return res.status(400).json({ error: "Les stems de ce clip ne sont pas encore prêts." });
+
+  const settings = req.body?.stems || {};
+  const jobOut = join(OUT_DIR, jobId);
+  const STEM_KEYS = ["vocals", "drums", "bass", "other"];
+  const stemsForMix = [];
+  for (const key of STEM_KEYS) {
+    // Voix : on préfère la version nettoyée (sans écho/réverb) si prête,
+    // comme le fait déjà /recompose ailleurs dans ce fichier.
+    const url = key === "vocals" ? (job.vocalsClean || job.vocals) : job[key];
+    if (!url) continue;
+    const filePath = join(jobOut, url.split("/").pop());
+    if (!existsSync(filePath)) continue;
+    const s = settings[key] || {};
+    stemsForMix.push({
+      path: filePath,
+      volume: typeof s.volume === "number" ? s.volume : 1,
+      pan: typeof s.pan === "number" ? s.pan : 0,
+      mute: !!s.mute,
+      solo: !!s.solo,
+    });
+  }
+  if (stemsForMix.length === 0)
+    return res.status(400).json({ error: "Aucun stem disponible pour ce clip." });
+
+  try {
+    const outName = `remix_mix_${Date.now()}.flac`;
+    const outPath = join(jobOut, outName);
+    await mixStemsCustom(stemsForMix, outPath);
+    res.json({ url: `/outputs/clip-editor/${jobId}/${outName}` });
+  } catch (err) {
+    console.error(`❌ [clip-editor] remix-export ${jobId} échoué :`, err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 
