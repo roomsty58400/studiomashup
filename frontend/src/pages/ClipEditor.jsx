@@ -468,33 +468,6 @@ const GENRE_PRESETS = [
   "Drum and Bass", "Phonk",
 ];
 
-// Réglage neutre — restauré par défaut sur chaque stem avant d'appliquer un
-// preset de genre (cf. GENRE_MIX_PRESETS ci-dessous), et quand on désélectionne.
-const NEUTRAL_STEM_SETTINGS = { volume: 1, pan: 0, mute: false, solo: false };
-
-// ── Presets de mix par genre — appliqués RÉELLEMENT au clic (volume/mute par
-// stem, pas juste un libellé texte) : chaque genre pousse en avant les stems
-// qui le caractérisent, façon point de départ "suggestion IA" évoqué dans le
-// spec Mashup Editor. Volontairement simple (pas de règles de placement/
-// tempo) — seuls les 4 leviers déjà exposés dans l'éditeur (volume/mute par
-// stem) sont utilisés, donc ce qui s'entend au clic correspond exactement à
-// ce que "Exporter le mix" produira. Seules les clés précisées ici s'écartent
-// du réglage neutre (cf. applyGenre) — pas de "pan" par genre, une bascule
-// stéréo par genre n'apporterait rien d'utile ici.
-const GENRE_MIX_PRESETS = {
-  "R&B": { vocals: { volume: 1.3 }, bass: { volume: 1.15 } },
-  "Rock": { drums: { volume: 1.2 }, other: { volume: 1.2 } },
-  "Trap": { bass: { volume: 1.4 }, drums: { volume: 1.2 }, vocals: { volume: 0.85 } },
-  "Drill": { drums: { volume: 1.3 }, bass: { volume: 1.3 }, other: { volume: 0.8 } },
-  "Hard Techno": { drums: { volume: 1.4 }, bass: { volume: 1.3 }, vocals: { mute: true }, other: { volume: 0.8 } },
-  "Future Garage": { other: { volume: 1.25 }, bass: { volume: 1.1 } },
-  "Disco House": { bass: { volume: 1.2 }, drums: { volume: 1.2 }, other: { volume: 1.15 } },
-  "Deep House": { bass: { volume: 1.2 }, other: { volume: 1.1 }, vocals: { volume: 0.9 } },
-  "Minimal House": { drums: { volume: 1.15 }, other: { volume: 0.75 }, vocals: { mute: true } },
-  "Tech House": { drums: { volume: 1.25 }, bass: { volume: 1.2 }, vocals: { volume: 0.85 } },
-  "Drum and Bass": { drums: { volume: 1.4 }, bass: { volume: 1.3 }, other: { volume: 0.8 } },
-  "Phonk": { bass: { volume: 1.4 }, drums: { volume: 1.15 }, vocals: { volume: 0.7 } },
-};
 
 function StemLane({ def, url, settings, onChange, hasSolo, level }) {
   const effectivelyOff = settings.mute || (hasSolo && !settings.solo);
@@ -558,6 +531,13 @@ function FadrMacheUpPanel({ job, jobId, video }) {
   const [prompt, setPrompt] = useState(null);
   const [promptError, setPromptError] = useState(null);
   const [copied, setCopied] = useState(false);
+  // Génération IA réelle (ElevenLabs Music) déclenchée par le clic sur une
+  // pastille de genre — distincte du mixdown ffmpeg (⬇ EXPORTER LE MIX) et du
+  // prompt Suno/Udio (✦ GÉNÉRER UN PROMPT) : ici on obtient directement un
+  // fichier audio généré par IA dans le genre choisi.
+  const [genreGenerating, setGenreGenerating] = useState(false);
+  const [genreResult, setGenreResult] = useState(null);
+  const [genreError, setGenreError] = useState(null);
 
   const audioRefs = useRef({});
   const audioCtxRef = useRef(null);
@@ -657,22 +637,31 @@ function FadrMacheUpPanel({ job, jobId, video }) {
 
   const updateSetting = (key, patch) => setSettings(s => ({ ...s, [key]: { ...s[key], ...patch } }));
 
-  // Clic sur une pastille de genre : applique RÉELLEMENT le preset (volume/
-  // mute par stem, cf. GENRE_MIX_PRESETS) — s'entend tout de suite si "▶
-  // ÉCOUTER LE MIX" est déjà lancé — plutôt que de se contenter d'un
-  // libellé utilisé seulement au moment de générer un prompt. Un 2e clic sur
-  // la même pastille désélectionne et remet les 4 stems au réglage neutre.
-  const applyGenre = (g) => {
-    if (genre === g) {
-      setGenre(null);
-      setSettings(Object.fromEntries(STEM_DEFS.map(d => [d.key, { ...NEUTRAL_STEM_SETTINGS }])));
-      return;
-    }
+  // Clic sur une pastille de genre : déclenche une VRAIE génération IA
+  // (ElevenLabs Music, cf. routes/clipEditor.js /:id/genre-generate) — un
+  // morceau neuf dans le genre choisi, inspiré de l'ambiance de la piste
+  // d'origine (titre/chaîne), pas juste un réglage de volume local. Prend
+  // 30-90s (appel réseau + génération côté ElevenLabs) et coûte réellement
+  // (~0,11$ pour l'aperçu de 45s) — d'où le verrou anti-double-clic pendant
+  // qu'une génération est déjà en cours.
+  const handleGenreClick = async (g) => {
+    if (genreGenerating) return;
     setGenre(g);
-    const preset = GENRE_MIX_PRESETS[g] || {};
-    setSettings(Object.fromEntries(
-      STEM_DEFS.map(d => [d.key, { ...NEUTRAL_STEM_SETTINGS, ...(preset[d.key] || {}) }])
-    ));
+    setGenreGenerating(true);
+    setGenreError(null);
+    setGenreResult(null);
+    try {
+      const res = await fetch(`${API}/api/clip-editor/${jobId}/genre-generate`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ genre: g, title: video?.title, channel: video?.channel }),
+      });
+      const data = await res.json();
+      if (data.url) setGenreResult({ url: data.url, genre: g });
+      else setGenreError(data.error || "Erreur inconnue");
+    } catch (e) {
+      setGenreError("Erreur réseau : " + e.message);
+    }
+    setGenreGenerating(false);
   };
 
   const handleExport = async () => {
@@ -741,19 +730,49 @@ function FadrMacheUpPanel({ job, jobId, video }) {
 
           <div style={{ marginTop: 16 }}>
             <div style={{ fontSize: 11, color: "var(--muted2)", marginBottom: 8, fontWeight: 700, letterSpacing: 0.5 }}>
-              GENRE (OPTIONNEL) — clique pour appliquer un mix de départ (volume par stem) + alimenter le prompt Suno/Udio
+              GENRE — clique pour générer une piste IA (ElevenLabs Music) dans ce style, inspirée du morceau
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
               {GENRE_PRESETS.map(g => (
-                <button key={g} type="button" onClick={() => applyGenre(g)}
-                  style={{ padding: "5px 12px", borderRadius: 20, fontSize: 11, fontWeight: 700, cursor: "pointer",
+                <button key={g} type="button" disabled={genreGenerating} onClick={() => handleGenreClick(g)}
+                  style={{ padding: "5px 12px", borderRadius: 20, fontSize: 11, fontWeight: 700,
+                    cursor: genreGenerating ? "wait" : "pointer",
                     border: `1px solid ${genre === g ? "var(--orange)" : "var(--border)"}`,
                     background: genre === g ? "rgba(255,106,0,0.15)" : "rgba(255,255,255,0.03)",
-                    color: genre === g ? "var(--orange)" : "var(--muted2)" }}>
-                  {g}
+                    color: genre === g ? "var(--orange)" : "var(--muted2)",
+                    opacity: genreGenerating && genre !== g ? 0.5 : 1 }}>
+                  {genreGenerating && genre === g ? "⏳ Génération…" : g}
                 </button>
               ))}
             </div>
+
+            {genreGenerating && (
+              <div style={{ marginTop: 10, fontSize: 12, color: "var(--muted2)" }}>
+                ⏳ Génération IA en cours (ElevenLabs Music, ~30-90s)…
+              </div>
+            )}
+            {genreError && (
+              <div style={{ marginTop: 10, padding: "8px 12px", background: "rgba(255,68,68,0.08)",
+                border: "1px solid #ff444433", borderRadius: 6, color: "#ff6666", fontSize: 13 }}>
+                {genreError}
+              </div>
+            )}
+            {genreResult && (
+              <div style={{ marginTop: 12, background: "var(--surface2)", border: "1px solid rgba(255,106,0,0.25)",
+                borderRadius: 10, padding: 14 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "var(--orange)", marginBottom: 8 }}>
+                  🎵 Piste IA générée — genre {genreResult.genre}
+                </div>
+                <audio src={`${API}${genreResult.url}`} controls style={{ width: "100%" }} />
+                <button type="button"
+                  onClick={() => triggerDownload(buildDownloadUrl(genreResult.url, `${sanitizeFilename(video?.title)} (IA ${genreResult.genre})`))}
+                  style={{ display: "block", width: "100%", textAlign: "center", marginTop: 10, padding: "8px 0", borderRadius: 8,
+                    background: "rgba(255,106,0,0.12)", border: "1px solid var(--orange)", color: "var(--orange)",
+                    fontSize: 12, fontWeight: 800, cursor: "pointer" }}>
+                  ⬇ Télécharger
+                </button>
+              </div>
+            )}
           </div>
 
           <div style={{ display: "flex", gap: 8, marginTop: 16 }}>

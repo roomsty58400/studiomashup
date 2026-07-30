@@ -4,13 +4,15 @@ import { v4 as uuidv4 } from "uuid";
 import { join, dirname, extname } from "path";
 import { fileURLToPath } from "url";
 import { existsSync, mkdirSync } from "fs";
-import { rename, rm } from "fs/promises";
+import { rename, rm, writeFile } from "fs/promises";
 import { downloadAudio, downloadVideo } from "../services/ytdlp.js";
 import { extractAudio, exportMP3, combineTracks, mixStemsCustom } from "../services/ffmpeg.js";
 import { separateStemsFull } from "../services/demucs.js";
 import { dereverbVocals } from "../services/dereverb.js";
 import { recomposeReplace, combineStems, stripAudio } from "../services/clipEditor.js";
 import { registerJobCleanup } from "../services/jobCleanup.js";
+import { composeMusic } from "../services/elevenlabsMusic.js";
+import { callGemini } from "./prompt.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const router = express.Router();
@@ -406,6 +408,73 @@ router.post("/:id/remix-export", async (req, res) => {
   } catch (err) {
     console.error(`❌ [clip-editor] remix-export ${jobId} échoué :`, err.message);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Cadre FadrMacheUp : génération IA au clic sur un genre ──
+// Contrairement à /remix-export (mixdown ffmpeg des stems existants) et à
+// /api/prompt/remix (texte à coller dans Suno/Udio), cette route appelle une
+// VRAIE API de génération audio (ElevenLabs Music) et renvoie directement un
+// fichier — c'est la réponse à la demande explicite de l'utilisateur ("je
+// voulais que ça génère l'effet du genre sur le morceau, comme dans le
+// concept de Fadr"). Écart assumé par rapport à Fadr (cf. commentaire dans
+// services/elevenlabsMusic.js) : pas d'API audio-to-audio publique
+// accessible en 2026 (Suno/Udio), donc on génère un morceau NEUF inspiré du
+// genre + de l'ambiance de la piste d'origine plutôt que de transformer
+// littéralement l'audio existant.
+// Verrou anti-double-clic : chaque génération est facturée (~0,15$/min chez
+// ElevenLabs) — un double-submit accidentel ne doit pas déclencher 2 appels
+// payants pour le même job.
+const activeGenreGenerations = new Set();
+const GENRE_PREVIEW_DURATION_MS = 45000; // aperçu 45s, pas la piste complète (coût/latence maîtrisés)
+
+router.post("/:id/genre-generate", async (req, res) => {
+  const jobId = req.params.id;
+  const job = jobs.get(jobId);
+  if (!job) return res.status(404).json({ error: "Job introuvable." });
+
+  const { genre, title, channel } = req.body;
+  if (!genre) return res.status(400).json({ error: "genre requis" });
+
+  if (activeGenreGenerations.has(jobId)) {
+    return res.status(409).json({ error: "Une génération est déjà en cours pour ce clip — patiente qu'elle se termine." });
+  }
+
+  const geminiKey = process.env.GEMINI_API_KEY;
+  if (!geminiKey) {
+    return res.status(500).json({ error: "GEMINI_API_KEY manquante dans backend/.env (nécessaire pour rédiger le prompt envoyé à ElevenLabs)." });
+  }
+
+  activeGenreGenerations.add(jobId);
+  try {
+    const musicPrompt = await callGemini(geminiKey, `You write short, vivid text prompts for the ElevenLabs Music AI generator (a text-to-music model — your output is sent directly to the API, verbatim, never read by a human first).
+
+Source of inspiration (a song the user picked — draw mood/energy/instrumentation cues from it only, never copy lyrics or melody):
+Title: ${title || job.title || "unknown"}
+Artist/Channel: ${channel || "unknown"}
+
+Target genre: ${genre}
+
+Write ONE descriptive paragraph (2-4 sentences, under 350 characters) for a NEW ${genre} track inspired by the mood/energy of the source song above. Include specific instrumentation typical of ${genre}, tempo/feel, production character, and whether it naturally has vocals for ${genre} (say "instrumental" if not).
+
+Rules:
+- Write in English.
+- Natural flowing prose, not a tagged/structured list.
+- Output ONLY the paragraph, no intro, no quotes, no markdown.`);
+
+    const audioBuf = await composeMusic({ prompt: musicPrompt, durationMs: GENRE_PREVIEW_DURATION_MS });
+
+    const jobOut = join(OUT_DIR, jobId);
+    const safeGenre = genre.replace(/[^a-z0-9]+/gi, "_").toLowerCase();
+    const outName = `genre_${safeGenre}_${Date.now()}.mp3`;
+    await writeFile(join(jobOut, outName), audioBuf);
+
+    res.json({ url: `/outputs/clip-editor/${jobId}/${outName}`, prompt: musicPrompt });
+  } catch (err) {
+    console.error(`❌ [clip-editor] genre-generate ${jobId} (${genre}) échoué :`, err.message);
+    res.status(500).json({ error: err.message });
+  } finally {
+    activeGenreGenerations.delete(jobId);
   }
 });
 
