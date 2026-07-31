@@ -34,6 +34,7 @@ import mashupsHistoryRoutes from "./routes/mashups.js";
 import macheupdjRoutes from "./routes/macheupdj.js";
 import albumArtRoutes from "./routes/coverart.js";
 import pdfTextRoutes from "./routes/pdfText.js";
+import playlistPromptRoutes from "./routes/playlistPrompt.js";
 import { cleanupMediaFiles } from "./services/cleanup.js";
 import { shutdownAllWorkers } from "./services/workerPool.js";
 
@@ -201,6 +202,7 @@ app.use("/api/media-proxy", mediaProxyRoutes);
 app.use("/api/macheupdj", macheupdjRoutes);
 app.use("/api/album-art", albumArtRoutes);
 app.use("/api/pdf-text", pdfTextRoutes);
+app.use("/api/playlist-prompt", playlistPromptRoutes);
 
 app.get("/api/health", (_, res) => res.json({ status: "ok" }));
 

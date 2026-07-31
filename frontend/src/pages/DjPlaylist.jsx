@@ -160,6 +160,41 @@ export default function DjPlaylist({ onSendToMacheupDJ }) {
 
   const removeBatch = (id) => setBatches(prev => prev.filter(b => b.id !== id));
 
+  // ── Assistant IA "décris l'ambiance → playlist de référence" (31/07) ──
+  // Envoie la description libre de l'utilisateur à l'IA (backend, Gemini),
+  // qui propose thème/style/durée + une vingtaine de titres réels. Le
+  // résultat est injecté comme un lot de référence "normal" via addBatch —
+  // il repasse ensuite par tout le pipeline existant (comparaison à la
+  // bibliothèque, élargissement par artiste, génération, export), sans rien
+  // dupliquer. Pré-sélectionne aussi directement le thème/style/durée dans
+  // la Section ③ pour que "Générer" soit immédiatement prêt à cliquer.
+  const [aiPrompt, setAiPrompt] = useState("");
+  const [aiGenerating, setAiGenerating] = useState(false);
+  const [aiError, setAiError] = useState(null);
+
+  const runAiAssistant = async () => {
+    if (!aiPrompt.trim() || aiGenerating) return;
+    setAiGenerating(true); setAiError(null);
+    try {
+      const res = await fetch(`${API}/api/playlist-prompt`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: aiPrompt.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Échec de l'assistant IA");
+      addBatch(data.theme, data.style, data.tracks);
+      setGenTheme(data.theme);
+      setGenStyles([data.style]);
+      if (data.targetMinutes) setGenMinutes(data.targetMinutes);
+      setAiPrompt("");
+    } catch (err) {
+      setAiError(err.message);
+    } finally {
+      setAiGenerating(false);
+    }
+  };
+
   // ── Comparaison (recalculée SEULEMENT quand batches ou libraryEntries
   // changent, jamais à chaque render) ──
   // Bug corrigé (31/07, retour utilisateur "ça bug" en génération) : sans
@@ -486,6 +521,26 @@ export default function DjPlaylist({ onSendToMacheupDJ }) {
           <div style={{ fontSize: 11.5, color: "var(--muted2)", marginBottom: 10 }}>
             Importe une setlist existante (M3U/M3U8/TXT/PDF) ou pars d'une suggestion — chaque lot est rangé sous un thème + style.
           </div>
+
+          {/* Assistant IA : décrit l'ambiance en langage libre, l'IA propose thème/style/durée + une playlist de départ */}
+          <div style={{ border: "1px solid var(--cyan)", borderRadius: 10, padding: 12, marginBottom: 14 }}>
+            <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--cyan)", marginBottom: 6 }}>
+              ✨ Assistant IA — décris la soirée voulue
+            </div>
+            <div style={{ fontSize: 10.5, color: "#666", marginBottom: 8 }}>
+              Ex : "Mariage champêtre, ambiance chill l'après-midi puis dansante le soir, 3h" — l'IA propose un thème, un style, une durée et une vingtaine de titres réels pour démarrer.
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <textarea value={aiPrompt} onChange={e => setAiPrompt(e.target.value)}
+                placeholder="Décris l'ambiance, le thème, la durée…" rows={2}
+                style={{ ...inputStyle, flex: 1, minWidth: 260, resize: "vertical", fontFamily: "inherit" }} />
+              <BtnPrimary onClick={runAiAssistant} disabled={aiGenerating || !aiPrompt.trim()}>
+                {aiGenerating ? "⏳ L'IA réfléchit…" : "✨ Générer avec l'IA"}
+              </BtnPrimary>
+            </div>
+            {aiError && <div style={{ fontSize: 11, color: "#ff8080", marginTop: 8 }}>⚠ {aiError}</div>}
+          </div>
+
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
             <input type="text" placeholder="Thème (ex: Mariage)" value={pendingTheme} onChange={e => setPendingTheme(e.target.value)}
               style={inputStyle} />
