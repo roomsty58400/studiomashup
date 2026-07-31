@@ -32,6 +32,7 @@ import ravedjAutoRoutes from "./routes/ravedjAuto.js";
 import mediaProxyRoutes from "./routes/mediaProxy.js";
 import mashupsHistoryRoutes from "./routes/mashups.js";
 import macheupdjRoutes from "./routes/macheupdj.js";
+import albumArtRoutes from "./routes/coverart.js";
 import { cleanupMediaFiles } from "./services/cleanup.js";
 import { shutdownAllWorkers } from "./services/workerPool.js";
 
@@ -197,6 +198,7 @@ app.use("/api/diag", diagRoutes);
 app.use("/api/ravedj-auto", ravedjAutoRoutes);
 app.use("/api/media-proxy", mediaProxyRoutes);
 app.use("/api/macheupdj", macheupdjRoutes);
+app.use("/api/album-art", albumArtRoutes);
 
 app.get("/api/health", (_, res) => res.json({ status: "ok" }));
 

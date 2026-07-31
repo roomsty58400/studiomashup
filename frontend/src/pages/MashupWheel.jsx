@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from "react";
 import Deck from "../components/Deck.jsx";
 import Footer from "../components/Footer.jsx";
+import AlbumArt from "../components/AlbumArt.jsx";
 
 const API = "http://localhost:3001";
 
@@ -336,6 +337,12 @@ export default function MashupWheel({ onSendToStudio, onSendToExt }) {
                         transform: isSelected ? "scale(1.12)" : "scale(1)", transition: "transform 0.15s ease",
                         background: "#000",
                       }}>
+                      {/* Miniature YouTube brute (pas de pochette réelle ici) :
+                          la roue peut afficher des dizaines de points en même
+                          temps, une recherche de pochette par point dépasserait
+                          vite le quota de l'API iTunes pour un gain visuel nul
+                          à cette taille. Le vrai artwork n'est chargé que pour
+                          la carte de détail ci-dessous, une fois un point choisi. */}
                       <img src={p.thumbnail} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                       {proven && (
                         <div style={{ position: "absolute", top: -2, right: -2, fontSize: 12, lineHeight: 1,
@@ -355,7 +362,8 @@ export default function MashupWheel({ onSendToStudio, onSendToExt }) {
                 ) : (
                   <div style={{ background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 10, padding: 14 }}>
                     <div style={{ display: "flex", gap: 10, marginBottom: 10 }}>
-                      <img src={selectedItem.thumbnail} alt="" style={{ width: 64, height: 48, objectFit: "cover", borderRadius: 6, flexShrink: 0 }} />
+                      <AlbumArt title={selectedItem.title} channel={selectedItem.channel} fallback={selectedItem.thumbnail} alt=""
+                        style={{ width: 64, height: 48, objectFit: "cover", borderRadius: 6, flexShrink: 0 }} />
                       <div style={{ minWidth: 0 }}>
                         <div style={{ fontSize: 13, fontWeight: 700, color: "white", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                           {selectedItem.title}
@@ -458,7 +466,8 @@ export default function MashupWheel({ onSendToStudio, onSendToExt }) {
               {randomStatus === "done" && randomItem && (
                 <>
                   <div style={{ display: "flex", alignItems: "center", gap: 10, flex: "1 1 260px", minWidth: 220 }}>
-                    <img src={randomItem.thumbnail} alt="" style={{ width: 64, height: 48, objectFit: "cover", borderRadius: 6, flexShrink: 0 }} />
+                    <AlbumArt title={randomItem.title} channel={randomItem.channel} fallback={randomItem.thumbnail} alt=""
+                      style={{ width: 64, height: 48, objectFit: "cover", borderRadius: 6, flexShrink: 0 }} />
                     <div style={{ minWidth: 0 }}>
                       <div style={{ fontSize: 13, fontWeight: 700, color: "white", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={randomItem.title}>
                         {randomItem.title}

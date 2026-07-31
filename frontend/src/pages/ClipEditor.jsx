@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from "react";
 import Footer from "../components/Footer.jsx";
 import LyricsModal from "../components/LyricsModal.jsx";
 import PromptSunoModal from "../components/PromptSunoModal.jsx";
+import AlbumArt from "../components/AlbumArt.jsx";
 import { copyToClipboard } from "../utils/clipboard.js";
 import { prefetchMedia } from "../utils/mediaCache.js";
 import { buildDownloadUrl, triggerDownload } from "../utils/download.js";
@@ -158,7 +159,8 @@ function VideoSearch({ onSelect }) {
               onMouseEnter={e => { if (!v.unavailable) e.currentTarget.style.background = "#1a1a1a"; }}
               onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
               <div style={{ position: "relative", flexShrink: 0 }}>
-                <img src={v.thumbnail} alt="" style={{ width: 64, height: 48, objectFit: "cover", borderRadius: 4 }} />
+                <AlbumArt title={v.title} channel={v.channel} fallback={v.thumbnail} alt=""
+                  style={{ width: 64, height: 48, objectFit: "cover", borderRadius: 4 }} />
                 {v.durationSec != null && (
                   <span style={{ position: "absolute", bottom: 2, right: 2, background: "rgba(0,0,0,0.85)", color: "#fff",
                     fontSize: 9, fontWeight: 700, padding: "1px 4px", borderRadius: 3 }}>{formatDuration(v.durationSec)}</span>
@@ -1097,9 +1099,6 @@ export default function ClipEditor() {
             WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", backgroundClip: "text" }}>
             🎬 MACHEUP CLIP EDITOR
           </div>
-          <div style={{ fontSize: 12, color: "var(--muted2)", letterSpacing: 1, marginTop: 6 }}>
-            Récupère le son d'un clip YouTube, transforme-le avec ton IA préférée, puis remonte-le sur la vidéo d'origine.
-          </div>
         </div>
 
         {/* Cadre principal : étapes ① et ② côte à côte, pour voir tout le début du parcours d'un coup d'œil */}
@@ -1119,7 +1118,8 @@ export default function ClipEditor() {
             {selectedVideo && (
               <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 12,
                 background: "var(--surface2)", border: "1px solid var(--border)", borderRadius: 10, padding: 10 }}>
-                <img src={selectedVideo.thumbnail} alt="" style={{ width: 76, height: 57, objectFit: "cover", borderRadius: 6, flexShrink: 0 }} />
+                <AlbumArt title={selectedVideo.title} channel={selectedVideo.channel} fallback={selectedVideo.thumbnail} alt=""
+                  style={{ width: 76, height: 57, objectFit: "cover", borderRadius: 6, flexShrink: 0 }} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontWeight: 700, color: "white", whiteSpace: "nowrap", overflow: "hidden",
                     textOverflow: "ellipsis", fontSize: 13 }}>

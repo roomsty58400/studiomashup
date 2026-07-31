@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, forwardRef, useImperativeHandle } from "react";
 import LyricsModal from "./LyricsModal.jsx";
 import PromptSunoModal from "./PromptSunoModal.jsx";
+import AlbumArt from "./AlbumArt.jsx";
 import { prefetchMedia } from "../utils/mediaCache.js";
 
 const YT_API_KEY = import.meta.env.VITE_YOUTUBE_API_KEY;
@@ -934,7 +935,8 @@ const Deck = forwardRef(function Deck({ side, label, colorKey, onLoaded, onAnaly
                   onMouseEnter={e=>{ if (!video.unavailable) e.currentTarget.style.background="#1a1a1a"; }}
                   onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
                   <div style={{ position:"relative", flexShrink:0 }}>
-                    <img src={video.thumb} alt="" style={{ width:60, height:45, objectFit:"cover", borderRadius:4 }} />
+                    <AlbumArt title={video.title} channel={video.channel} fallback={video.thumb} alt=""
+                      style={{ width:60, height:45, objectFit:"cover", borderRadius:4 }} />
                     {video.durationSec != null && (
                       <span style={{ position:"absolute", bottom:2, right:2, background:"rgba(0,0,0,0.85)", color:"#fff",
                         fontSize:9, fontWeight:700, padding:"1px 4px", borderRadius:3 }}>{formatDuration(video.durationSec)}</span>

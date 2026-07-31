@@ -748,9 +748,6 @@ export default function MacheupDJ() {
             WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", backgroundClip: "text" }}>
             🎧 MACHEUPDJ
           </div>
-          <div style={{ fontSize: 12, color: "var(--muted2)", letterSpacing: 1, marginTop: 6 }}>
-            Console 2 decks — scratch, boucle, hot cues, stems 2.0. Fichiers uploadés uniquement (pas de YouTube ici — cf. pourquoi dans le spec).
-          </div>
           {!ready && (
             <div style={{ marginTop: 10, fontSize: 11, color: "var(--yellow)" }}>
               ⚠ Clique n'importe où sur la page pour activer l'audio (règle du navigateur).
