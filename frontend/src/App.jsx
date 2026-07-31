@@ -5,9 +5,10 @@ import ClipEditor from "./pages/ClipEditor.jsx";
 import MashupWheel from "./pages/MashupWheel.jsx";
 import Ext from "./pages/Ext.jsx";
 import MacheupDJ from "./pages/MacheupDJ.jsx";
+import DjPlaylist from "./pages/DjPlaylist.jsx";
 
 export default function App() {
-  const [view, setView] = useState("studio"); // "studio" (2 à 5 decks, fusion MacheUp/MULTI) | "clip" | "wheel" | "ext" | "dj"
+  const [view, setView] = useState("studio"); // "studio" (2 à 5 decks, fusion MacheUp/MULTI) | "clip" | "wheel" | "ext" | "dj" | "djplaylist"
 
   // Paire de vidéos choisie dans Mashup Wheel ("Envoyer en Deck A/B") — à
   // précharger dans les decks du Studio au prochain affichage. Pas besoin de
@@ -89,6 +90,9 @@ export default function App() {
       </div>
       <div style={{ display: view === "dj" ? "contents" : "none" }}>
         <MacheupDJ />
+      </div>
+      <div style={{ display: view === "djplaylist" ? "contents" : "none" }}>
+        <DjPlaylist />
       </div>
     </>
   );

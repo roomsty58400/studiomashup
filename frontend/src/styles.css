@@ -303,6 +303,7 @@ body {
 .view-btn--wheel  { --pad-color: var(--green); }
 .view-btn--ext    { --pad-color: #ffaa00; }
 .view-btn--dj     { --pad-color: var(--orange); }
+.view-btn--djplaylist { --pad-color: var(--yellow); }
 
 /* ── Clip Editor : cadre regroupant les étapes ① et ② côte à côte ── */
 /* ── Clip Editor : les 3 cadres d'étape reprennent le langage visuel des

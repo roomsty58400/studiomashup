@@ -200,6 +200,13 @@ export default function TopBar({ activeView = "studio", onChangeView, onDemo }) 
             >
               🎧 MACHEUPDJ
             </button>
+            <button
+              className={`view-btn view-btn--djplaylist ${activeView === "djplaylist" ? "active" : ""}`}
+              onClick={() => onChangeView("djplaylist")}
+              data-tooltip="Créateur de playlist thématique — compare une setlist de référence à ta bibliothèque et génère un profil d'animation de soirée"
+            >
+              🗂 DJPLAYLIST
+            </button>
           </div>
         )}
         <RadioPlayer />
