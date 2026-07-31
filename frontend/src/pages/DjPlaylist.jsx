@@ -45,6 +45,16 @@ export default function DjPlaylist({ onSendToMacheupDJ }) {
   const [scanStats, setScanStats] = useState(null);
   const supported = typeof window !== "undefined" && "showDirectoryPicker" in window;
 
+  // ── Analyse en lot (BPM/énergie) de toute la bibliothèque scannée ──
+  // Pré-chauffe le cache (IndexedDB local + SQLite serveur) pour CHAQUE
+  // morceau une bonne fois pour toutes, plutôt que de laisser la génération
+  // (③) découvrir et analyser les morceaux un par un à chaque nouvelle
+  // combinaison thème/style — pratique avant une grosse soirée pour ne plus
+  // attendre pendant la génération elle-même.
+  const [libAnalyzing, setLibAnalyzing] = useState(false);
+  const [libAnalyzeProgress, setLibAnalyzeProgress] = useState(null); // { done, total, analyzed, cached, errors }
+  const libAnalyzeCancelRef = useRef(false);
+
   // ── Playlists de référence importées/ajoutées (regroupées par lot) ──
   const [batches, setBatches] = useState([]); // [{ id, theme, style, tracks:[{title,artist,duration}] }]
   const [importing, setImporting] = useState(false);
@@ -195,6 +205,72 @@ export default function DjPlaylist({ onSendToMacheupDJ }) {
     setGenStyles(prev => prev.includes(style) ? prev.filter(s => s !== style) : [...prev, style]);
   };
 
+  // ── Analyse (BPM/énergie) d'UN morceau de la bibliothèque, avec cache —
+  // factorisé car utilisé à la fois par la génération de playlist (③) et
+  // par l'analyse en lot de toute la bibliothèque (①). Retourne
+  // { analysis, fromCache } ; analysis === null signifie annulé
+  // (cancelRef.current est passé à true pendant l'attente). ──────────────
+  const analyzeLibraryEntry = async (entry, cancelRef) => {
+    const file = await entry.handle.getFile();
+    const cached = await getCachedAnalysis(entry.relPath, file).catch(() => null);
+    if (cached) return { analysis: cached, fromCache: true };
+
+    const fd = new FormData();
+    fd.append("audio", file, entry.name);
+    fd.append("title", entry.tags?.title || entry.name);
+    fd.append("stemMode", "4");
+    const res = await fetch(`${API}/api/analyze/upload`, { method: "POST", body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Échec du lancement");
+
+    let analysis;
+    if (data.cached && data.track) {
+      analysis = data.track;
+    } else {
+      analysis = await new Promise((resolve, reject) => {
+        const poll = async () => {
+          if (cancelRef.current) { resolve(null); return; }
+          const r = await fetch(`${API}/api/analyze/${data.jobId}/status`);
+          const d = await r.json();
+          if (cancelRef.current) { resolve(null); return; }
+          if (d.status === "running") { setTimeout(poll, 2000); return; }
+          if (d.status === "error") { reject(new Error(d.message || "Analyse échouée")); return; }
+          resolve(d.track);
+        };
+        poll();
+      });
+      if (!analysis) return { analysis: null, fromCache: false }; // annulé
+    }
+    await setCachedAnalysis(entry.relPath, file, analysis).catch(() => {});
+    return { analysis, fromCache: false };
+  };
+
+  // ── Analyse en lot de TOUTE la bibliothèque scannée — pré-chauffe le
+  // cache morceau par morceau (jamais 2 Demucs en parallèle), en sautant
+  // ceux déjà en cache. Indépendant de la génération ③ (peut tourner sans
+  // avoir importé la moindre playlist de référence). ──────────────────────
+  const runLibraryAnalysis = async () => {
+    if (libraryEntries.length === 0 || libAnalyzing) return;
+    libAnalyzeCancelRef.current = false;
+    setLibAnalyzing(true);
+    const total = libraryEntries.length;
+    let done = 0, analyzed = 0, cachedCount = 0, errors = 0;
+    setLibAnalyzeProgress({ done, total, analyzed, cached: cachedCount, errors });
+    for (const entry of libraryEntries) {
+      if (libAnalyzeCancelRef.current) break;
+      try {
+        const { analysis, fromCache } = await analyzeLibraryEntry(entry, libAnalyzeCancelRef);
+        if (analysis) { if (fromCache) cachedCount++; else analyzed++; }
+      } catch (err) {
+        console.warn(`[DJPLAYLIST] analyse en lot ignorée pour ${entry.relPath} :`, err.message);
+        errors++;
+      }
+      done++;
+      setLibAnalyzeProgress({ done, total, analyzed, cached: cachedCount, errors });
+    }
+    setLibAnalyzing(false);
+  };
+
   // ── Génération : analyse à la demande (séquentielle — jamais 2 Demucs en
   // parallèle, cf. même contrainte que MACHEUP/MACHEUPDJ) puis pacing. ──────
   const runGeneration = async () => {
@@ -285,39 +361,8 @@ export default function DjPlaylist({ onSendToMacheupDJ }) {
         const m = uniqueMatched[i];
         const entry = m.matchEntry;
         try {
-          const file = await entry.handle.getFile();
-          let analysis = await getCachedAnalysis(entry.relPath, file).catch(() => null);
-          if (!analysis) {
-            const fd = new FormData();
-            fd.append("audio", file, entry.name);
-            fd.append("title", entry.tags?.title || entry.name);
-            fd.append("stemMode", "4");
-            const res = await fetch(`${API}/api/analyze/upload`, { method: "POST", body: fd });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error || "Échec du lancement");
-            if (data.cached && data.track) {
-              analysis = data.track;
-            } else {
-              // Vérifie l'annulation à CHAQUE tick de polling (pas seulement
-              // entre 2 morceaux) — sinon "Annuler" pendant l'analyse d'un
-              // gros morceau reste sans effet visible pendant plusieurs
-              // minutes (retour utilisateur "ça bug", cause n°3 identifiée).
-              analysis = await new Promise((resolve, reject) => {
-                const poll = async () => {
-                  if (cancelGenRef.current) { resolve(null); return; }
-                  const r = await fetch(`${API}/api/analyze/${data.jobId}/status`);
-                  const d = await r.json();
-                  if (cancelGenRef.current) { resolve(null); return; }
-                  if (d.status === "running") { setTimeout(poll, 2000); return; }
-                  if (d.status === "error") { reject(new Error(d.message || "Analyse échouée")); return; }
-                  resolve(d.track);
-                };
-                poll();
-              });
-              if (cancelGenRef.current || !analysis) break;
-            }
-            await setCachedAnalysis(entry.relPath, file, analysis).catch(() => {});
-          }
+          const { analysis } = await analyzeLibraryEntry(entry, cancelGenRef);
+          if (!analysis) { if (cancelGenRef.current) break; else throw new Error("Analyse échouée (annulée ou vide)"); }
           candidates.push({
             relPath: entry.relPath,
             handle: entry.handle, // conservé pour permettre l'envoi vers MACHEUPDJ (lecture directe du fichier)
@@ -403,6 +448,15 @@ export default function DjPlaylist({ onSendToMacheupDJ }) {
                   {scanning ? `⏳ Scan… ${scanProgress}` : "🔄 (Re)scanner la bibliothèque"}
                 </BtnPrimary>
                 <BtnGhost onClick={pickFolder}>🔁 Changer de dossier</BtnGhost>
+                {libraryEntries.length > 0 && (
+                  libAnalyzing ? (
+                    <BtnGhost onClick={() => { libAnalyzeCancelRef.current = true; }}>✕ Annuler l'analyse</BtnGhost>
+                  ) : (
+                    <BtnPrimary color="var(--yellow)" onClick={runLibraryAnalysis}>
+                      🧬 Analyser toute la bibliothèque (BPM/énergie)
+                    </BtnPrimary>
+                  )
+                )}
               </div>
               {scanStats && (
                 <div style={{ fontSize: 10.5, color: "#555", marginTop: 6 }}>
@@ -411,6 +465,16 @@ export default function DjPlaylist({ onSendToMacheupDJ }) {
                   {scanStats.unreadable > 0 && ` · ${scanStats.unreadable} illisibles (ex : fichiers cloud pas téléchargés localement)`}
                   {scanStats.foldersUnreadable > 0 && ` · ${scanStats.foldersUnreadable} dossier(s) inaccessible(s)`}
                   {" — si le compte ne correspond toujours pas à ce que montre l'Explorateur Windows, dis-moi le nombre exact affiché ici, ça aide à trouver quel format manque."}
+                </div>
+              )}
+              {libAnalyzeProgress && (
+                <div style={{ fontSize: 10.5, color: libAnalyzing ? "var(--yellow)" : "#5fd98a", marginTop: 6 }}>
+                  {libAnalyzing ? "⏳ " : "✅ "}
+                  Analyse {libAnalyzing ? "en cours" : "terminée"} — {libAnalyzeProgress.done}/{libAnalyzeProgress.total} morceaux
+                  ({libAnalyzeProgress.analyzed} analysé{libAnalyzeProgress.analyzed > 1 ? "s" : ""},
+                  {" "}{libAnalyzeProgress.cached} déjà en cache
+                  {libAnalyzeProgress.errors > 0 && `, ${libAnalyzeProgress.errors} en erreur`})
+                  {" — première analyse de chaque morceau seulement, les suivantes seront instantanées."}
                 </div>
               )}
             </>
