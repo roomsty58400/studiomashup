@@ -5,7 +5,7 @@ import {
   getCachedAnalysis, setCachedAnalysis,
 } from "../utils/libraryDb.js";
 import { parseM3U, parseTxt } from "../utils/playlistParse.js";
-import { findBestMatch } from "../utils/textMatch.js";
+import { findBestMatch, normalize, candidateFromEntry } from "../utils/textMatch.js";
 import { buildAnimationPlaylist } from "../utils/djPacing.js";
 import { exportM3U, exportTXT } from "../utils/playlistExport.js";
 import { DJ_PLAYLIST_PRESETS } from "../data/djPlaylistPresets.js";
@@ -60,6 +60,7 @@ export default function DjPlaylist({ onSendToMacheupDJ }) {
   const [genProgress, setGenProgress] = useState(null); // { done, total }
   const [genResult, setGenResult] = useState(null); // { phases, tracks }
   const [genError, setGenError] = useState(null);
+  const [genPoolInfo, setGenPoolInfo] = useState(null); // { direct, expanded }
   const cancelGenRef = useRef(false);
 
   useEffect(() => {
@@ -199,7 +200,7 @@ export default function DjPlaylist({ onSendToMacheupDJ }) {
   const runGeneration = async () => {
     if (!genTheme || genStyles.length === 0) return;
     cancelGenRef.current = false;
-    setGenerating(true); setGenError(null); setGenResult(null);
+    setGenerating(true); setGenError(null); setGenResult(null); setGenPoolInfo(null);
 
     try {
       const matched = comparedBatches
@@ -220,6 +221,62 @@ export default function DjPlaylist({ onSendToMacheupDJ }) {
         setGenError("Aucun morceau trouvé localement pour ce thème/style — importe/complète ta bibliothèque, ou choisis un autre style.");
         return;
       }
+
+      // ── Élargissement du pool à TOUTE la bibliothèque scannée (31/07,
+      // retour utilisateur : "il ne prend pas en compte l'entièreté de ma
+      // bibliothèque") ──────────────────────────────────────────────────
+      // Jusqu'ici, la génération ne piochait QUE parmi les morceaux qui
+      // matchent EXACTEMENT une piste des playlists de référence importées
+      // (souvent une poignée de titres) — le reste de la bibliothèque
+      // scannée (potentiellement des milliers de morceaux) n'était jamais
+      // utilisé, même s'il contenait clairement des morceaux du même style.
+      // On étend donc le pool : tout morceau de la bibliothèque dont
+      // l'artiste correspond (flou) à un artiste déjà repéré dans les
+      // références pour CE thème/style est aussi inclus comme candidat.
+      const anchorArtistsByStyle = new Map(); // style -> Set(artiste normalisé)
+      for (const m of uniqueMatched) {
+        const artist = m.matchEntry?.tags?.artist || m.artist;
+        const norm = normalize(artist);
+        if (!norm) continue;
+        if (!anchorArtistsByStyle.has(m.style)) anchorArtistsByStyle.set(m.style, new Set());
+        anchorArtistsByStyle.get(m.style).add(norm);
+      }
+
+      const seenPaths = new Set(uniqueMatched.map(m => m.matchEntry.relPath));
+      const directCount = uniqueMatched.length;
+      let expandedCount = 0;
+      // Plafond de l'expansion : chaque candidat ajouté déclenche ensuite une
+      // analyse BPM/énergie complète côté serveur (séparation Demucs incluse,
+      // coûteuse) — sans limite, une bibliothèque avec quelques artistes très
+      // fournis pourrait ajouter des centaines de candidats et rendre la
+      // génération interminable. On plafonne large par rapport au nombre de
+      // morceaux réellement nécessaires pour remplir la durée ciblée (~200s/
+      // morceau en moyenne, x3 de marge pour laisser le pacing par phase
+      // choisir parmi plusieurs candidats plutôt qu'un seul par créneau).
+      const neededEstimate = Math.max(15, Math.ceil((genMinutes * 60) / 200));
+      const maxExpanded = neededEstimate * 3;
+      let expansionCapped = false;
+      if (anchorArtistsByStyle.size > 0 && libraryEntries.length > 0) {
+        for (const entry of libraryEntries) {
+          if (expandedCount >= maxExpanded) { expansionCapped = true; break; }
+          if (seenPaths.has(entry.relPath)) continue;
+          const candidate = candidateFromEntry(entry);
+          const normArtist = normalize(candidate.artist);
+          if (!normArtist) continue;
+          for (const [style, artistSet] of anchorArtistsByStyle) {
+            if (artistSet.has(normArtist)) {
+              uniqueMatched.push({
+                title: candidate.title, artist: candidate.artist,
+                matchEntry: entry, style, found: true, score: 1,
+              });
+              seenPaths.add(entry.relPath);
+              expandedCount++;
+              break;
+            }
+          }
+        }
+      }
+      setGenPoolInfo({ direct: directCount, expanded: expandedCount, capped: expansionCapped });
 
       setGenProgress({ done: 0, total: uniqueMatched.length });
       const candidates = [];
@@ -490,6 +547,14 @@ export default function DjPlaylist({ onSendToMacheupDJ }) {
                       )}
                     </div>
                   </div>
+                  {genPoolInfo && (
+                    <div style={{ fontSize: 10.5, color: "#666", marginBottom: 6 }}>
+                      ℹ Pool de départ : {genPoolInfo.direct} morceau{genPoolInfo.direct > 1 ? "x" : ""} trouvé{genPoolInfo.direct > 1 ? "s" : ""} directement dans tes playlists de référence
+                      {genPoolInfo.expanded > 0
+                        ? ` + ${genPoolInfo.expanded} autre${genPoolInfo.expanded > 1 ? "s" : ""} du même artiste retrouvé${genPoolInfo.expanded > 1 ? "s" : ""} ailleurs dans ta bibliothèque${genPoolInfo.capped ? " (plafonné pour garder un temps de génération raisonnable)" : ""}.`
+                        : " (aucun morceau supplémentaire du même artiste trouvé ailleurs dans ta bibliothèque)."}
+                    </div>
+                  )}
                   <div style={{ fontSize: 10.5, color: "#555", marginBottom: 10 }}>
                     ℹ Export M3U en chemins relatifs à ton dossier bibliothèque (limite du navigateur : pas d'accès au chemin absolu réel) —
                     place le fichier .m3u8 exporté directement dans ce dossier pour que VirtualDJ/Winamp/Serato retrouvent les morceaux.

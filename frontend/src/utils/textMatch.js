@@ -58,7 +58,7 @@ export function matchScore(ref, candidate) {
 // nom de fichier lui-même (convention très répandue) plutôt que de laisser
 // le nom de fichier ENTIER (avec l'artiste dedans) polluer la comparaison
 // de titre — sans ça, "Coldplay - Yellow.mp3" ne matchait jamais "Yellow".
-function candidateFromEntry(entry) {
+export function candidateFromEntry(entry) {
   if (entry.tags?.title) return { title: entry.tags.title, artist: entry.tags?.artist || null };
   const base = (entry.name || "").replace(/\.[a-z0-9]+$/i, "");
   const m = base.match(/^(.+?)\s*[-–—]\s*(.+)$/);
