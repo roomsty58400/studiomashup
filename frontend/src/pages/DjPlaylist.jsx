@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import Footer from "../components/Footer.jsx";
 import {
   saveLibraryHandle, loadLibraryHandle, scanLibraryRecursive,
@@ -149,14 +149,23 @@ export default function DjPlaylist({ onSendToMacheupDJ }) {
 
   const removeBatch = (id) => setBatches(prev => prev.filter(b => b.id !== id));
 
-  // ── Comparaison (recalculée dès que batches ou libraryEntries changent) ──
-  const comparedBatches = batches.map(b => ({
+  // ── Comparaison (recalculée SEULEMENT quand batches ou libraryEntries
+  // changent, jamais à chaque render) ──
+  // Bug corrigé (31/07, retour utilisateur "ça bug" en génération) : sans
+  // useMemo, ce calcul (comparaison floue de CHAQUE piste de référence
+  // contre TOUTE la bibliothèque scannée) se relançait à CHAQUE re-render —
+  // y compris à chaque tick de progression pendant la génération
+  // (setGenProgress toutes les quelques secondes). Sur une grosse
+  // bibliothèque (des milliers de fichiers, cf. retour utilisateur sur le
+  // nombre de morceaux scannés), ce recalcul synchrone pouvait prendre
+  // plusieurs secondes et geler complètement l'onglet à chaque tick.
+  const comparedBatches = useMemo(() => batches.map(b => ({
     ...b,
     results: b.tracks.map(t => {
       const match = libraryEntries.length ? findBestMatch(t, libraryEntries) : null;
       return { ...t, found: !!match, matchEntry: match?.entry || null, score: match?.score || 0 };
     }),
-  }));
+  })), [batches, libraryEntries]);
 
   const themes = [...new Set(batches.map(b => b.theme))];
   const stylesForGenTheme = [...new Set(batches.filter(b => b.theme === genTheme).map(b => b.style))];
@@ -212,16 +221,23 @@ export default function DjPlaylist({ onSendToMacheupDJ }) {
             if (data.cached && data.track) {
               analysis = data.track;
             } else {
+              // Vérifie l'annulation à CHAQUE tick de polling (pas seulement
+              // entre 2 morceaux) — sinon "Annuler" pendant l'analyse d'un
+              // gros morceau reste sans effet visible pendant plusieurs
+              // minutes (retour utilisateur "ça bug", cause n°3 identifiée).
               analysis = await new Promise((resolve, reject) => {
                 const poll = async () => {
+                  if (cancelGenRef.current) { resolve(null); return; }
                   const r = await fetch(`${API}/api/analyze/${data.jobId}/status`);
                   const d = await r.json();
+                  if (cancelGenRef.current) { resolve(null); return; }
                   if (d.status === "running") { setTimeout(poll, 2000); return; }
                   if (d.status === "error") { reject(new Error(d.message || "Analyse échouée")); return; }
                   resolve(d.track);
                 };
                 poll();
               });
+              if (cancelGenRef.current || !analysis) break;
             }
             await setCachedAnalysis(entry.relPath, file, analysis).catch(() => {});
           }
@@ -241,6 +257,11 @@ export default function DjPlaylist({ onSendToMacheupDJ }) {
         setGenProgress({ done: i + 1, total: uniqueMatched.length });
       }
 
+      if (cancelGenRef.current) {
+        setGenError("Génération annulée.");
+        return;
+      }
+
       if (candidates.length === 0) {
         setGenError("Aucun morceau n'a pu être analysé (BPM/énergie) — réessaie, ou vérifie que le serveur tourne bien.");
         return;
@@ -248,6 +269,15 @@ export default function DjPlaylist({ onSendToMacheupDJ }) {
 
       const result = buildAnimationPlaylist(candidates, genMinutes * 60);
       setGenResult(result);
+    } catch (err) {
+      // Bug corrigé (31/07, retour utilisateur "ça bug") : ce try n'avait
+      // pas de catch — toute exception échappant aux try/catch internes
+      // (ex: erreur réseau, bug dans buildAnimationPlaylist) devenait un
+      // rejet non géré ; le finally remettait bien le bouton "Générer" en
+      // état normal, mais sans jamais expliquer à l'utilisateur ce qui
+      // s'était passé — d'où l'impression de "bug" silencieux.
+      console.error("[DJPLAYLIST] génération échouée :", err);
+      setGenError(err.message || "Erreur inattendue pendant la génération. Réessaie, ou vérifie que le serveur tourne bien.");
     } finally {
       setGenerating(false);
       setGenProgress(null);
