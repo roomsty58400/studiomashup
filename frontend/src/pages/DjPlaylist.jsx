@@ -42,6 +42,7 @@ export default function DjPlaylist({ onSendToMacheupDJ }) {
   const [libraryEntries, setLibraryEntries] = useState([]);
   const [scanning, setScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState(0);
+  const [scanStats, setScanStats] = useState(null);
   const supported = typeof window !== "undefined" && "showDirectoryPicker" in window;
 
   // ── Playlists de référence importées/ajoutées (regroupées par lot) ──
@@ -91,10 +92,11 @@ export default function DjPlaylist({ onSendToMacheupDJ }) {
 
   const scanLibrary = async () => {
     if (!rootHandle) return;
-    setScanning(true); setScanProgress(0);
+    setScanning(true); setScanProgress(0); setScanStats(null);
     try {
-      const entries = await scanLibraryRecursive(rootHandle, (n) => setScanProgress(n));
+      const { entries, stats } = await scanLibraryRecursive(rootHandle, (n) => setScanProgress(n));
       setLibraryEntries(entries);
+      setScanStats(stats);
     } finally {
       setScanning(false);
     }
@@ -285,15 +287,26 @@ export default function DjPlaylist({ onSendToMacheupDJ }) {
             </div>
           )}
           {supported && rootHandle && permission === "granted" && (
-            <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-              <div style={{ fontSize: 12.5, color: "var(--muted2)" }}>
-                📁 {rootHandle.name} — {libraryEntries.length > 0 ? `${libraryEntries.length} morceau${libraryEntries.length > 1 ? "x" : ""} scanné${libraryEntries.length > 1 ? "s" : ""}` : "pas encore scanné"}
+            <>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <div style={{ fontSize: 12.5, color: "var(--muted2)" }}>
+                  📁 {rootHandle.name} — {libraryEntries.length > 0 ? `${libraryEntries.length} morceau${libraryEntries.length > 1 ? "x" : ""} scanné${libraryEntries.length > 1 ? "s" : ""}` : "pas encore scanné"}
+                </div>
+                <BtnPrimary onClick={scanLibrary} disabled={scanning}>
+                  {scanning ? `⏳ Scan… ${scanProgress}` : "🔄 (Re)scanner la bibliothèque"}
+                </BtnPrimary>
+                <BtnGhost onClick={pickFolder}>🔁 Changer de dossier</BtnGhost>
               </div>
-              <BtnPrimary onClick={scanLibrary} disabled={scanning}>
-                {scanning ? `⏳ Scan… ${scanProgress}` : "🔄 (Re)scanner la bibliothèque"}
-              </BtnPrimary>
-              <BtnGhost onClick={pickFolder}>🔁 Changer de dossier</BtnGhost>
-            </div>
+              {scanStats && (
+                <div style={{ fontSize: 10.5, color: "#555", marginTop: 6 }}>
+                  {scanStats.totalFiles} fichiers vus · {scanStats.audioFound} morceaux audio
+                  {scanStats.nonAudioSkipped > 0 && ` · ${scanStats.nonAudioSkipped} non-audio ignorés (images, .nfo, playlists…)`}
+                  {scanStats.unreadable > 0 && ` · ${scanStats.unreadable} illisibles (ex : fichiers cloud pas téléchargés localement)`}
+                  {scanStats.foldersUnreadable > 0 && ` · ${scanStats.foldersUnreadable} dossier(s) inaccessible(s)`}
+                  {" — si le compte ne correspond toujours pas à ce que montre l'Explorateur Windows, dis-moi le nombre exact affiché ici, ça aide à trouver quel format manque."}
+                </div>
+              )}
+            </>
           )}
         </Section>
 

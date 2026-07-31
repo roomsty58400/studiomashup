@@ -65,7 +65,18 @@ export const setCachedAnalysis = (relPath, file, data) => idbSet(ANALYSIS_STORE,
 export const getCachedTags = (relPath, file) => idbGet(TAGS_STORE, fileKey(relPath, file));
 export const setCachedTags = (relPath, file, tags) => idbSet(TAGS_STORE, fileKey(relPath, file), tags);
 
-const AUDIO_EXT = new Set([".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus"]);
+// Liste volontairement large — un scan qui rate un format présent chez
+// l'utilisateur est un vrai bug silencieux (retour utilisateur : "il ne
+// trouve pas le même nombre de morceaux"), alors qu'inclure un format rare
+// ne coûte rien. Note : .wma/.ape/.wv passent très bien dans le pipeline
+// d'analyse serveur (ffmpeg), mais PAS forcément dans decodeAudioData côté
+// navigateur pour la lecture live dans MACHEUPDJ (Chrome ne décode pas le
+// WMA) — DJPLAYLIST (comparaison/génération/export) n'en a pas besoin, la
+// lecture live gère déjà son propre message d'erreur si un format ne passe pas.
+const AUDIO_EXT = new Set([
+  ".mp3", ".wav", ".flac", ".m4a", ".m4b", ".aac", ".ogg", ".oga", ".opus",
+  ".wma", ".aiff", ".aif", ".ape", ".wv",
+]);
 const isAudioFile = (name) => AUDIO_EXT.has(name.slice(name.lastIndexOf(".")).toLowerCase());
 
 // ── Scan récursif de TOUT le dossier bibliothèque (contrairement au
@@ -76,37 +87,55 @@ const isAudioFile = (name) => AUDIO_EXT.has(name.slice(name.lastIndexOf(".")).to
 // (quasi instantané), sinon lus en local via jsmediatags et mis en cache
 // pour la prochaine fois. onProgress(scanned, path) permet d'afficher une
 // barre de progression pendant le scan d'une grosse bibliothèque.
+//
+// Renvoie { entries, stats } plutôt qu'un simple tableau : stats permet
+// d'afficher "X fichiers vus, Y ignorés (non-audio), Z illisibles" pour que
+// l'écart avec le nombre de fichiers du dossier (vu dans l'Explorateur
+// Windows par ex.) s'explique clairement plutôt que de rester "un chiffre
+// bizarre" sans explication.
 export async function scanLibraryRecursive(rootHandle, onProgress) {
   const results = [];
+  const stats = { totalFiles: 0, audioFound: 0, nonAudioSkipped: 0, unreadable: 0, foldersUnreadable: 0 };
   let scanned = 0;
 
   async function walk(dirHandle, path) {
     const entries = [];
     try {
       for await (const [name, handle] of dirHandle.entries()) entries.push({ name, handle });
-    } catch { return; } // dossier illisible (permission retirée, lien cassé, etc.)
+    } catch {
+      stats.foldersUnreadable++; // dossier illisible (permission retirée, lien cassé, etc.)
+      return;
+    }
 
     for (const { name, handle } of entries) {
       const childPath = path ? `${path}/${name}` : name;
       if (handle.kind === "directory") {
         await walk(handle, childPath);
-      } else if (isAudioFile(name)) {
-        let tags = null;
+      } else {
+        stats.totalFiles++;
+        if (!isAudioFile(name)) { stats.nonAudioSkipped++; continue; }
         try {
           const file = await handle.getFile();
-          tags = await getCachedTags(childPath, file).catch(() => null);
+          let tags = await getCachedTags(childPath, file).catch(() => null);
           if (!tags) {
             tags = await readAudioTags(file);
             await setCachedTags(childPath, file, tags).catch(() => {});
           }
           scanned++;
+          stats.audioFound++;
           onProgress?.(scanned, childPath);
           results.push({ name, handle, relPath: childPath, tags });
-        } catch { /* fichier illisible, ignoré */ }
+        } catch {
+          // Fichier illisible : permission refusée, ou — cas fréquent sur un
+          // dossier synchronisé cloud (OneDrive "Fichiers à la demande" etc.)
+          // — un fichier "placeholder" pas encore vraiment téléchargé sur
+          // le disque, que getFile() ne peut pas ouvrir.
+          stats.unreadable++;
+        }
       }
     }
   }
 
   await walk(rootHandle, "");
-  return results;
+  return { entries: results, stats };
 }
