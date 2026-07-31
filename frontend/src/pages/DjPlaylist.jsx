@@ -35,7 +35,7 @@ const fmtMinutes = (sec) => `${Math.round((sec || 0) / 60)} min`;
 
 let batchCounter = 0;
 
-export default function DjPlaylist() {
+export default function DjPlaylist({ onSendToMacheupDJ }) {
   // ── Bibliothèque locale ──
   const [rootHandle, setRootHandle] = useState(null);
   const [permission, setPermission] = useState(null); // null|"granted"|"prompt"|"denied"|"unsupported"
@@ -225,6 +225,7 @@ export default function DjPlaylist() {
           }
           candidates.push({
             relPath: entry.relPath,
+            handle: entry.handle, // conservé pour permettre l'envoi vers MACHEUPDJ (lecture directe du fichier)
             title: entry.tags?.title || m.title,
             artist: entry.tags?.artist || m.artist,
             duration: analysis.duration,
@@ -366,8 +367,8 @@ export default function DjPlaylist() {
             <>
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
                 <select value={genTheme} onChange={e => { setGenTheme(e.target.value); setGenStyles([]); }} style={inputStyle}>
-                  <option value="">— Choisir un thème —</option>
-                  {themes.map(t => <option key={t} value={t}>{t}</option>)}
+                  <option value="" style={optionStyle}>— Choisir un thème —</option>
+                  {themes.map(t => <option key={t} value={t} style={optionStyle}>{t}</option>)}
                 </select>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                   {stylesForGenTheme.map(s => (
@@ -408,6 +409,13 @@ export default function DjPlaylist() {
                     <div style={{ display: "flex", gap: 8 }}>
                       <BtnGhost onClick={() => exportM3U(genResult.tracks, `${genTheme}-${genStyles.join("+")}.m3u8`)}>⬇ M3U</BtnGhost>
                       <BtnGhost onClick={() => exportTXT(genResult.tracks, `${genTheme}-${genStyles.join("+")}.txt`)}>⬇ TXT</BtnGhost>
+                      {onSendToMacheupDJ && (
+                        <BtnPrimary color="var(--magenta)" onClick={() => onSendToMacheupDJ({
+                          theme: genTheme, styles: genStyles, tracks: genResult.tracks,
+                        })}>
+                          🎧 Envoyer vers MACHEUPDJ
+                        </BtnPrimary>
+                      )}
                     </div>
                   </div>
                   <div style={{ fontSize: 10.5, color: "#555", marginBottom: 10 }}>
@@ -450,10 +458,22 @@ function Section({ title, children }) {
   );
 }
 
+// Fond OPAQUE obligatoire (pas rgba quasi-transparent) : sur un <select>,
+// un fond translucide laisse le navigateur afficher son propre habillage
+// par défaut derrière/autour du contrôle (souvent clair) — texte blanc sur
+// ce fond clair devenait illisible, et ce 2e habillage donnait l'impression
+// d'un cadre dédoublé. Même règle appliquée aux <input>/<select> par
+// cohérence. Cf. .radio-select dans styles.css pour le même principe déjà
+// utilisé ailleurs dans l'app.
 const inputStyle = {
-  background: "rgba(255,255,255,0.04)", border: "1px solid var(--border)", borderRadius: 6,
+  background: "#111318", border: "1px solid var(--border)", borderRadius: 6,
   padding: "6px 10px", fontSize: 12, color: "white",
 };
+// Un <select> a besoin d'un style explicite sur SES <option> en plus du
+// style du <select> lui-même — sans ça, la liste déroulée retombe sur le
+// thème clair par défaut du navigateur/OS, indépendamment du style du
+// contrôle fermé.
+const optionStyle = { background: "#111318", color: "white" };
 
 const btnPrimaryStyle = (color = "var(--cyan)") => ({
   fontSize: 11.5, fontWeight: 800, padding: "6px 14px", borderRadius: 7,

@@ -63,6 +63,17 @@ export default function App() {
   // EXT. sans perdre la référence à ce qui est chargé dans le Studio).
   const [currentTracks, setCurrentTracks] = useState({ A: null, B: null });
 
+  // ── Envoi DJPLAYLIST → MACHEUPDJ ("Envoyer vers MACHEUPDJ" après une
+  // génération, cf. DjPlaylist.jsx) — même principe que pendingPair/
+  // sendToStudio ci-dessus : la playlist générée ({theme, styles, tracks})
+  // est mémorisée ici et passée en prop à MacheupDJ, qui l'affiche dans son
+  // nouveau cadre "🗂 PLAYLIST" et peut la lancer piste par piste.
+  const [pendingDjPlaylist, setPendingDjPlaylist] = useState(null);
+  const sendToMacheupDJ = (playlist) => {
+    setPendingDjPlaylist(playlist);
+    setView("dj");
+  };
+
   // Les 4 pages restent montées en permanence (au lieu d'un rendu conditionnel
   // `view === "x" && <X/>`) pour que changer de vue ne détruise plus leur état
   // interne (decks chargés, sélection de stems, résultats d'analyse, etc.).
@@ -89,10 +100,10 @@ export default function App() {
         <Ext trackA={currentTracks.A} trackB={currentTracks.B} presetPair={pendingExtPair} />
       </div>
       <div style={{ display: view === "dj" ? "contents" : "none" }}>
-        <MacheupDJ />
+        <MacheupDJ pendingPlaylist={pendingDjPlaylist} />
       </div>
       <div style={{ display: view === "djplaylist" ? "contents" : "none" }}>
-        <DjPlaylist />
+        <DjPlaylist onSendToMacheupDJ={sendToMacheupDJ} />
       </div>
     </>
   );

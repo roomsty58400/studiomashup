@@ -382,9 +382,20 @@ function StemPad({ def, active, settings, onChange, hasSolo }) {
 // ── Panneau d'un deck complet ── forwardRef : expose loadFile(file) pour
 // que le parent (bouton →A/→B de la bibliothèque) puisse charger un fichier
 // directement, sans passer par le <input type=file> caché de ce deck.
-const DeckPanel = forwardRef(function DeckPanel({ side, label, accentColor, audioCtxRef, crossfaderInputRef, ensureAudio, tick }, ref) {
+const DeckPanel = forwardRef(function DeckPanel({ side, label, accentColor, audioCtxRef, crossfaderInputRef, ensureAudio, tick, onNaturalEnd }, ref) {
   const engineRef = useRef(null);
   const rotationRef = useRef(0);
+
+  // Callback externe optionnel (panneau PLAYLIST) prévenu en plus du
+  // setPlaying(false) interne, quand la piste de ce deck se termine
+  // naturellement — sert à enchaîner automatiquement au morceau suivant.
+  // Passe par un ref (mis à jour à chaque render via l'effect ci-dessous)
+  // plutôt que d'être lu directement dans getEngine() : l'assignation
+  // engine.onNaturalEnd n'a lieu qu'UNE FOIS (à la création du moteur), donc
+  // fermer directement sur la prop figerait sa valeur du tout premier
+  // render (avant même qu'une playlist ne soit reçue).
+  const onNaturalEndRef = useRef(onNaturalEnd);
+  useEffect(() => { onNaturalEndRef.current = onNaturalEnd; }, [onNaturalEnd]);
 
   // Crée le moteur au premier moment où l'AudioContext partagé (parent) est
   // prêt — PAS dans un useEffect gardé par audioCtxRef.current en dépendance
@@ -397,8 +408,9 @@ const DeckPanel = forwardRef(function DeckPanel({ side, label, accentColor, audi
     if (!engineRef.current && audioCtxRef.current && crossfaderInputRef.current) {
       engineRef.current = new DeckEngine(audioCtxRef.current, crossfaderInputRef.current);
       // Fin de piste naturelle (pas de boucle) → resynchronise le bouton
-      // PLAY/PAUSE, sinon il reste coincé sur "en lecture" après la fin.
-      engineRef.current.onNaturalEnd = () => setPlaying(false);
+      // PLAY/PAUSE, sinon il reste coincé sur "en lecture" après la fin —
+      // + prévient le panneau PLAYLIST (s'il y en a un) pour enchaîner.
+      engineRef.current.onNaturalEnd = () => { setPlaying(false); onNaturalEndRef.current?.(); };
     }
     return engineRef.current;
   };
@@ -487,7 +499,24 @@ const DeckPanel = forwardRef(function DeckPanel({ side, label, accentColor, audi
 
   const handleFileChange = (e) => loadFile(e.target.files[0]);
 
-  useImperativeHandle(ref, () => ({ loadFile }));
+  // play/pause exposés en plus de loadFile — utilisés par le panneau
+  // PLAYLIST pour démarrer/enchaîner la lecture sans passer par un clic
+  // utilisateur sur le bouton PLAY du deck. Vérifie eng.hasAudio (l'état du
+  // MOTEUR) plutôt que le state React "hasAudio" : juste après un await
+  // loadFile(...) depuis l'extérieur, le re-render qui mettrait à jour ce
+  // state n'a pas forcément encore eu lieu, alors que le moteur, lui, est
+  // déjà à jour de manière synchrone.
+  useImperativeHandle(ref, () => ({
+    loadFile,
+    play: () => {
+      const eng = engineRef.current;
+      if (eng?.hasAudio) { eng.play(); setPlaying(true); }
+    },
+    pause: () => {
+      const eng = engineRef.current;
+      if (eng) { eng.pause(); setPlaying(false); }
+    },
+  }));
 
   const pollStems = (jobId) => {
     const tickPoll = async () => {
@@ -667,7 +696,108 @@ const DeckPanel = forwardRef(function DeckPanel({ side, label, accentColor, audi
   );
 });
 
-export default function MacheupDJ() {
+// ── Panneau PLAYLIST — reçoit une playlist générée depuis DJPLAYLIST
+// ("🎧 Envoyer vers MACHEUPDJ") et la joue piste par piste sur le Deck A.
+// Enchaînement automatique à la fin de chaque piste via registerNaturalEndHandler
+// (branché sur le onNaturalEnd du Deck A, cf. DeckPanel). Pas d'auto-mix/
+// crossfade entre pistes en v1 — juste une lecture séquentielle fiable,
+// comme une playlist classique ; le crossfader du deck B reste disponible
+// pour mixer manuellement par-dessus si besoin.
+function PlaylistPanel({ playlist, deckRef, ensureAudio, registerNaturalEndHandler }) {
+  const [index, setIndex] = useState(-1);
+  const [playing, setPlaying] = useState(false);
+  const [loadError, setLoadError] = useState(null);
+  const indexRef = useRef(-1);
+  useEffect(() => { indexRef.current = index; }, [index]);
+
+  const playAt = useCallback(async (i) => {
+    if (!playlist || i < 0 || i >= playlist.tracks.length) { setPlaying(false); setIndex(-1); return; }
+    setLoadError(null);
+    ensureAudio?.();
+    setIndex(i);
+    const track = playlist.tracks[i];
+    try {
+      const file = await track.handle.getFile();
+      await deckRef.current?.loadFile(file);
+      deckRef.current?.play();
+      setPlaying(true);
+    } catch (err) {
+      setLoadError(`"${track.title}" illisible (${err.message}) — passage au suivant.`);
+      playAt(i + 1);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playlist]);
+
+  // Enregistre/désenregistre le gestionnaire de fin de piste auprès du
+  // parent à chaque changement de playlist (nouvelle playlist reçue =
+  // repart de zéro plutôt que de continuer sur l'ancienne liste d'index).
+  useEffect(() => {
+    setIndex(-1); setPlaying(false); setLoadError(null);
+    registerNaturalEndHandler(() => playAt(indexRef.current + 1));
+    return () => registerNaturalEndHandler(null);
+  }, [playlist, playAt, registerNaturalEndHandler]);
+
+  if (!playlist) {
+    return (
+      <div style={{ fontSize: 12, color: "var(--muted2)", textAlign: "center", padding: 14 }}>
+        Aucune playlist reçue — génères-en une depuis 🗂 DJPLAYLIST puis clique "🎧 Envoyer vers MACHEUPDJ".
+      </div>
+    );
+  }
+
+  const handlePlayPause = () => {
+    if (index === -1) { playAt(0); return; }
+    if (playing) { deckRef.current?.pause(); setPlaying(false); }
+    else { deckRef.current?.play(); setPlaying(true); }
+  };
+
+  const totalDuration = playlist.tracks.reduce((s, t) => s + (t.duration || 0), 0);
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
+        <div style={{ fontSize: 12, color: "var(--muted2)" }}>
+          {playlist.theme} <span style={{ color: "var(--cyan)" }}>/ {playlist.styles.join(", ")}</span>
+          <span style={{ marginLeft: 8 }}>{playlist.tracks.length} titres · {Math.round(totalDuration / 60)} min</span>
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          <PlBtn onClick={() => playAt(Math.max(0, index - 1))} disabled={index <= 0}>⏮</PlBtn>
+          <PlBtn onClick={handlePlayPause}>{playing ? "⏸ Pause" : index === -1 ? "▶ Lancer" : "▶ Reprendre"}</PlBtn>
+          <PlBtn onClick={() => playAt(index + 1)} disabled={index >= playlist.tracks.length - 1}>⏭</PlBtn>
+        </div>
+      </div>
+      {loadError && <div style={{ fontSize: 11, color: "#ff8080", marginBottom: 8 }}>⚠ {loadError}</div>}
+      <div style={{ maxHeight: 220, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 8 }}>
+        {playlist.tracks.map((t, i) => (
+          <div key={i} onClick={() => playAt(i)}
+            style={{ display: "flex", gap: 8, fontSize: 11.5, padding: "5px 10px", cursor: "pointer",
+              background: i === index ? "rgba(0,234,255,0.12)" : "transparent",
+              color: i === index ? "var(--cyan)" : "var(--muted2)",
+              borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
+            <span style={{ width: 20, flexShrink: 0, opacity: 0.6 }}>{i === index && playing ? "▶" : i + 1}</span>
+            <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {t.artist ? `${t.artist} — ` : ""}{t.title}
+            </span>
+            <span style={{ opacity: 0.6, flexShrink: 0 }}>{Math.floor((t.duration || 0) / 60)}:{String(Math.floor((t.duration || 0) % 60)).padStart(2, "0")}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PlBtn({ children, onClick, disabled }) {
+  return (
+    <button type="button" onClick={onClick} disabled={disabled}
+      style={{ fontSize: 11, fontWeight: 800, padding: "6px 12px", borderRadius: 7,
+        border: "1px solid var(--cyan)", background: "rgba(0,234,255,0.1)", color: "var(--cyan)",
+        cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.4 : 1 }}>
+      {children}
+    </button>
+  );
+}
+
+export default function MacheupDJ({ pendingPlaylist } = {}) {
   const audioCtxRef = useRef(null);
   const deckAGainRef = useRef(null); // étage crossfader — entrée deck A
   const deckBGainRef = useRef(null); // étage crossfader — entrée deck B
@@ -681,6 +811,20 @@ export default function MacheupDJ() {
   const [libraryOpen, setLibraryOpen] = useState(false);
   const deckARef = useRef(null);
   const deckBRef = useRef(null);
+
+  // ── Playlist reçue depuis DJPLAYLIST ("🎧 Envoyer vers MACHEUPDJ") ──
+  // Copiée en state local (plutôt qu'utilisée directement depuis la prop)
+  // pour s'ouvrir automatiquement dès qu'une NOUVELLE playlist arrive, même
+  // si le panneau avait été refermé entretemps.
+  const [playlist, setPlaylist] = useState(pendingPlaylist || null);
+  const [playlistOpen, setPlaylistOpen] = useState(!!pendingPlaylist);
+  useEffect(() => {
+    if (pendingPlaylist) { setPlaylist(pendingPlaylist); setPlaylistOpen(true); }
+  }, [pendingPlaylist]);
+  // Gestionnaire de fin de piste du Deck A, enregistré par PlaylistPanel —
+  // cf. onNaturalEnd passé au DeckPanel A plus bas.
+  const deckANaturalEndRef = useRef(null);
+  const registerDeckANaturalEnd = useCallback((fn) => { deckANaturalEndRef.current = fn; }, []);
 
   // Construction du graphe partagé (crossfader + master) — une seule fois,
   // au premier geste utilisateur (AudioContext ne démarre pas tout seul dans
@@ -775,21 +919,39 @@ export default function MacheupDJ() {
               ⚠ Clique n'importe où sur la page pour activer l'audio (règle du navigateur).
             </div>
           )}
-          <button type="button" onClick={() => setLibraryOpen(v => !v)}
-            style={{ marginTop: 12, fontSize: 11, fontWeight: 700, padding: "6px 14px", borderRadius: 7,
-              border: `1px solid ${libraryOpen ? "var(--cyan)" : "var(--border)"}`,
-              background: libraryOpen ? "rgba(0,234,255,0.1)" : "rgba(255,255,255,0.03)",
-              color: libraryOpen ? "var(--cyan)" : "var(--muted2)", cursor: "pointer", letterSpacing: 1 }}>
-            📁 BIBLIOTHÈQUE {libraryOpen ? "▴" : "▾"}
-          </button>
+          <div style={{ marginTop: 12, display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap" }}>
+            <button type="button" onClick={() => setLibraryOpen(v => !v)}
+              style={{ fontSize: 11, fontWeight: 700, padding: "6px 14px", borderRadius: 7,
+                border: `1px solid ${libraryOpen ? "var(--cyan)" : "var(--border)"}`,
+                background: libraryOpen ? "rgba(0,234,255,0.1)" : "rgba(255,255,255,0.03)",
+                color: libraryOpen ? "var(--cyan)" : "var(--muted2)", cursor: "pointer", letterSpacing: 1 }}>
+              📁 BIBLIOTHÈQUE {libraryOpen ? "▴" : "▾"}
+            </button>
+            <button type="button" onClick={() => setPlaylistOpen(v => !v)}
+              style={{ fontSize: 11, fontWeight: 700, padding: "6px 14px", borderRadius: 7,
+                border: `1px solid ${playlistOpen ? "var(--magenta)" : "var(--border)"}`,
+                background: playlistOpen ? "rgba(204,0,255,0.1)" : "rgba(255,255,255,0.03)",
+                color: playlistOpen ? "var(--magenta)" : "var(--muted2)", cursor: "pointer", letterSpacing: 1 }}>
+              🗂 PLAYLIST {playlist ? `(${playlist.tracks.length})` : ""} {playlistOpen ? "▴" : "▾"}
+            </button>
+          </div>
         </div>
 
         {libraryOpen && (
           <MacheupDjLibrary onLoadToDeck={handleLoadToDeck} onClose={() => setLibraryOpen(false)} />
         )}
 
+        {playlistOpen && (
+          <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 14,
+            marginBottom: 16, padding: 14 }}>
+            <PlaylistPanel playlist={playlist} deckRef={deckARef} ensureAudio={ensureAudio}
+              registerNaturalEndHandler={registerDeckANaturalEnd} />
+          </div>
+        )}
+
         <div style={{ display: "grid", gridTemplateColumns: "1fr 260px 1fr", gap: 16, alignItems: "start" }}>
-          <DeckPanel ref={deckARef} side="A" label="A" accentColor="#00eaff" audioCtxRef={audioCtxRef} crossfaderInputRef={deckAGainRef} ensureAudio={ensureAudio} tick={tick} />
+          <DeckPanel ref={deckARef} side="A" label="A" accentColor="#00eaff" audioCtxRef={audioCtxRef} crossfaderInputRef={deckAGainRef} ensureAudio={ensureAudio} tick={tick}
+            onNaturalEnd={() => deckANaturalEndRef.current?.()} />
 
           {/* Section MASTER centrale */}
           <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 14, padding: 18,
