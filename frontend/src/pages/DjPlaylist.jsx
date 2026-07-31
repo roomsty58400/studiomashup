@@ -159,13 +159,33 @@ export default function DjPlaylist({ onSendToMacheupDJ }) {
   // bibliothèque (des milliers de fichiers, cf. retour utilisateur sur le
   // nombre de morceaux scannés), ce recalcul synchrone pouvait prendre
   // plusieurs secondes et geler complètement l'onglet à chaque tick.
-  const comparedBatches = useMemo(() => batches.map(b => ({
-    ...b,
-    results: b.tracks.map(t => {
-      const match = libraryEntries.length ? findBestMatch(t, libraryEntries) : null;
-      return { ...t, found: !!match, matchEntry: match?.entry || null, score: match?.score || 0 };
-    }),
-  })), [batches, libraryEntries]);
+  //
+  // 2e bug corrigé (31/07, retour utilisateur "lag qd on retire un lot") :
+  // le useMemo ci-dessus dépend de `batches` en entier — retirer UN lot
+  // change la référence du tableau `batches`, ce qui relançait le matching
+  // flou pour TOUS les lots restants, pas seulement celui retiré (chaque
+  // piste comparée à toute la bibliothèque = coûteux). On mémorise donc
+  // aussi les résultats déjà calculés par piste (matchCacheRef), invalidés
+  // uniquement quand la bibliothèque elle-même change (nouveau scan) — pas
+  // quand on ajoute/retire un lot de référence.
+  const matchCacheRef = useRef({ library: null, map: new Map() });
+  const comparedBatches = useMemo(() => {
+    if (matchCacheRef.current.library !== libraryEntries) {
+      matchCacheRef.current = { library: libraryEntries, map: new Map() };
+    }
+    const cache = matchCacheRef.current.map;
+    return batches.map(b => ({
+      ...b,
+      results: b.tracks.map((t, idx) => {
+        const cacheKey = `${b.id}:${idx}`;
+        if (cache.has(cacheKey)) return cache.get(cacheKey);
+        const match = libraryEntries.length ? findBestMatch(t, libraryEntries) : null;
+        const result = { ...t, found: !!match, matchEntry: match?.entry || null, score: match?.score || 0 };
+        cache.set(cacheKey, result);
+        return result;
+      }),
+    }));
+  }, [batches, libraryEntries]);
 
   const themes = [...new Set(batches.map(b => b.theme))];
   const stylesForGenTheme = [...new Set(batches.filter(b => b.theme === genTheme).map(b => b.style))];
@@ -358,6 +378,11 @@ export default function DjPlaylist({ onSendToMacheupDJ }) {
           </div>
           {importError && <div style={{ fontSize: 11.5, color: "#ff8080", marginBottom: 10 }}>⚠ {importError}</div>}
 
+          <div style={{ fontSize: 10.5, color: "#666", marginBottom: 10, lineHeight: 1.5 }}>
+            ℹ Chaque titre de la playlist importée/suggérée est comparé (par titre + artiste, tolérant aux petites différences d'orthographe) à ta bibliothèque scannée ①.
+            <span style={{ color: "#5fd98a" }}> ✅ trouvé</span> = un fichier correspondant assez proche a été identifié (survole le titre pour voir lequel) ·
+            <span style={{ color: "#ff8080" }}> ❌ pas trouvé</span> = rien d'assez ressemblant dans ta bibliothèque, ou pas encore scannée.
+          </div>
           <div style={{ fontSize: 11, color: "var(--muted2)", marginBottom: 6 }}>Ou pars d'une suggestion (titres emblématiques, pas une playlist officielle) :</div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
             {DJ_PLAYLIST_PRESETS.map((p, i) => (
@@ -386,7 +411,11 @@ export default function DjPlaylist({ onSendToMacheupDJ }) {
                     </div>
                     <div style={{ maxHeight: 160, overflowY: "auto" }}>
                       {b.results.map((r, i) => (
-                        <div key={i} style={{ display: "flex", gap: 8, fontSize: 11.5, padding: "2px 0",
+                        <div key={i}
+                          title={r.found
+                            ? `Correspond à : ${r.matchEntry?.relPath || "?"} (${Math.round((r.score || 0) * 100)}% de correspondance)`
+                            : "Aucun fichier assez ressemblant dans ta bibliothèque scannée"}
+                          style={{ display: "flex", gap: 8, fontSize: 11.5, padding: "2px 0",
                           color: r.found ? "var(--muted2)" : "#ff8080" }}>
                           <span>{r.found ? "✅" : "❌"}</span>
                           <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
