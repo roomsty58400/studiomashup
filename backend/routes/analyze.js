@@ -1,8 +1,10 @@
 import express from "express";
+import multer from "multer";
+import { createHash } from "crypto";
 import { v4 as uuidv4 } from "uuid";
 import { join, dirname, extname } from "path";
 import { fileURLToPath } from "url";
-import { existsSync, mkdirSync } from "fs";
+import { existsSync, mkdirSync, createReadStream } from "fs";
 import { rename, rm } from "fs/promises";
 import { downloadAudio } from "../services/ytdlp.js";
 import { extractAudio } from "../services/ffmpeg.js";
@@ -60,6 +62,34 @@ registerJobCleanup(jobs, { label: "[analyze]" });
 // se contente de renvoyer ce même jobId (le frontend, qui poll déjà
 // GET /:id/status, voit sa progression comme s'il l'avait lancé lui-même).
 const activeAnalyses = new Map();
+
+// ── Upload d'un fichier audio local (mp3 perso, pas YouTube) ──
+// Même dossier tmp que le reste de cette route, avec l'extension d'origine
+// conservée (ffmpeg s'en sort en général sans, mais autant rester cohérent
+// avec le même pattern déjà utilisé pour l'upload de routes/macheupdj.js).
+const ALLOWED_UPLOAD_EXT = new Set([".mp3", ".wav", ".flac", ".m4a", ".ogg", ".aac", ".opus", ".webm"]);
+const safeUploadExt = (originalName) => {
+  const ext = extname(originalName || "").toLowerCase();
+  return ALLOWED_UPLOAD_EXT.has(ext) ? ext : ".mp3";
+};
+const uploadStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, TMP_DIR),
+  filename: (req, file, cb) => cb(null, `analyze_upload_${uuidv4()}${safeUploadExt(file.originalname)}`),
+});
+const uploadMulter = multer({ storage: uploadStorage, limits: { fileSize: 300 * 1024 * 1024 } });
+
+// Hash de contenu (SHA-256, tronqué à 16 hex) → identifiant stable pour un
+// fichier uploadé, préfixé "up_" pour ne jamais entrer en collision avec un
+// id de vidéo YouTube (toujours 11 caractères, alphanumérique+-_). Uploader
+// deux fois EXACTEMENT le même fichier retombe sur le même trackId, donc sur
+// le même cache SQLite — pas de re-séparation Demucs pour rien.
+const hashFile = (filePath) => new Promise((resolve, reject) => {
+  const hash = createHash("sha256");
+  createReadStream(filePath)
+    .on("data", (chunk) => hash.update(chunk))
+    .on("end", () => resolve(hash.digest("hex").slice(0, 16)))
+    .on("error", reject);
+});
 
 router.get("/:id/status", (req, res) => {
   const job = jobs.get(req.params.id);
@@ -325,6 +355,130 @@ router.post("/score", (req, res) => {
 
   const result = computeCompatibility(trackA, trackB);
   res.json({ trackA, trackB, ...result });
+});
+
+// ── Analyse complète d'un fichier audio UPLOADÉ (mp3 perso, pas YouTube) ──
+// Même pipeline que POST / ci-dessus (BPM/clé/structure + séparation stems),
+// mais à partir d'un fichier envoyé par le navigateur plutôt que d'un
+// téléchargement YouTube — cf. hashFile()/uploadMulter ci-dessus pour le
+// trackId stable. Même contrat de réponse que POST / ({cached:true,track}
+// ou {jobId}) pour que le frontend puisse réutiliser tel quel son polling
+// existant (GET /:id/status, déjà 100% générique, aucune dépendance à
+// videoId au-delà du nom du champ).
+//
+// Logique de cache/verrou dupliquée volontairement depuis POST / plutôt que
+// factorisée à chaud : cette route a sa propre histoire d'edge cases
+// documentés en commentaires plus haut dans ce fichier, préférable de ne pas
+// la faire dépendre d'un chemin supplémentaire tant que celui-ci n'a pas été
+// éprouvé en usage réel.
+router.post("/upload", uploadMulter.single("audio"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "Fichier audio manquant." });
+  const rawPath = req.file.path;
+  const title = req.body.title || req.file.originalname || "track";
+  const stemMode = normalizeStemMode(req.body.stemMode);
+
+  try {
+    const trackId = `up_${await hashFile(rawPath)}`;
+    const stemColumns = STEM_COLUMNS_BY_MODE[stemMode];
+
+    const cached = getTrack(trackId);
+    const resolveOut = (url) => join(__dirname, "../data/outputs", (url || "").replace(/^\/outputs\//, ""));
+    const modeMatches = cached && normalizeStemMode(cached.stem_mode) === stemMode;
+    const cachedStemPaths = modeMatches && stemColumns.every(([, col]) => cached[col])
+      ? Object.fromEntries(stemColumns.map(([key, col]) => [key, cached[col]]))
+      : null;
+    const stemsUsable = cachedStemPaths && Object.values(cachedStemPaths).every(p => existsSync(resolveOut(p)));
+
+    if (cached && cached.bpm != null && stemsUsable) {
+      await rm(rawPath, { force: true }).catch(() => {});
+      return res.json({ cached: true, track: cached });
+    }
+
+    const lockKey = `${trackId}:${stemMode}`;
+    const runningJobId = activeAnalyses.get(lockKey);
+    if (runningJobId && jobs.get(runningJobId)?.status === "running") {
+      await rm(rawPath, { force: true }).catch(() => {});
+      return res.json({ jobId: runningJobId });
+    }
+
+    const jobId = uuidv4();
+    const jobTmp = join(TMP_DIR, `analyze-${jobId}`);
+    const jobOut = join(OUT_DIR, trackId);
+    mkdirSync(jobTmp, { recursive: true });
+    mkdirSync(jobOut, { recursive: true });
+
+    activeAnalyses.set(lockKey, jobId);
+    res.json({ jobId });
+    updateJob(jobId, { status: "running", step: "extract", videoId: trackId, title });
+
+    (async () => {
+      try {
+        const wav = join(jobTmp, "audio.wav");
+        await extractAudio(rawPath, wav);
+
+        updateJob(jobId, { step: "analyze" });
+        const features = await analyzeAudio(wav);
+        if (features.analysisFailed) {
+          throw new Error(`Analyse musicale (BPM/clé) impossible : ${features.analysisError}`);
+        }
+
+        const stemNames = stemColumns.map(([key]) => key);
+        updateJob(jobId, { step: "separate" });
+        const stemsTmp = join(jobTmp, "stems");
+        const separated = stemMode === 2
+          ? await separateStems(wav, stemsTmp)
+          : await separateStemsFull(wav, stemsTmp, stemMode);
+
+        const stemFileNames = {};
+        for (const name of stemNames) stemFileNames[name] = `${name}${extname(separated[name])}`;
+        await Promise.all(
+          stemNames.map(name => rename(separated[name], join(jobOut, stemFileNames[name])))
+        );
+
+        const stemPathFields = {};
+        for (const col of ALL_STEM_COLUMNS) stemPathFields[col] = null;
+        for (const [key, col] of stemColumns) stemPathFields[col] = `/outputs/analyze/${trackId}/${stemFileNames[key]}`;
+
+        const track = upsertTrack({
+          id: trackId,
+          source: "upload",
+          title,
+          duration: features.duration,
+          bpm: features.bpm,
+          key_pitch: features.key_pitch,
+          key_mode: features.key_mode,
+          key_confidence: features.key_confidence,
+          camelot: features.camelot,
+          energy_rms: features.energy_rms,
+          energy_std: features.energy_std,
+          spectral_centroid: features.spectral_centroid,
+          mfcc_json: JSON.stringify(features.mfcc_mean || []),
+          structure_json: JSON.stringify(features.structure || []),
+          beat_times_json: JSON.stringify(features.beat_times || []),
+          kick_times_json: JSON.stringify(features.kick_times || []),
+          snare_times_json: JSON.stringify(features.snare_times || []),
+          drops_json: JSON.stringify(features.drops || []),
+          stem_mode: String(stemMode),
+          ...stemPathFields,
+          analyzed_at: Date.now(),
+        });
+
+        updateJob(jobId, { status: "done", step: "done", track });
+        console.log(`✅ [analyze] ${trackId} (upload "${title}") terminé (BPM ${track.bpm}, ${track.camelot})`);
+      } catch (err) {
+        console.error(`❌ [analyze] ${trackId} (upload) échoué :`, err.message);
+        updateJob(jobId, { status: "error", message: err.message });
+      } finally {
+        await rm(jobTmp, { recursive: true, force: true }).catch(() => {});
+        await rm(rawPath, { force: true }).catch(() => {});
+        if (activeAnalyses.get(lockKey) === jobId) activeAnalyses.delete(lockKey);
+      }
+    })();
+  } catch (err) {
+    await rm(rawPath, { force: true }).catch(() => {});
+    console.error("❌ [analyze] upload échoué avant lancement du job :", err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 export default router;

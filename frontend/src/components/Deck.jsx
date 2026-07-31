@@ -92,6 +92,11 @@ const Deck = forwardRef(function Deck({ side, label, colorKey, onLoaded, onAnaly
   const [recognizing, setRecognizing]     = useState(false);
   const [recognizeResult, setRecognizeResult] = useState(null); // { found, title, artist, album, artwork }
   const [recognizeError,  setRecognizeError]  = useState(null);
+  // Sépare "on a un résultat d'identification" de "la fenêtre de détail est
+  // ouverte" — un upload de fichier déclenche l'identification automatique
+  // en silence (pour la vignette inline + les stems/analyse), sans faire
+  // surgir la fenêtre modale comme un clic manuel sur ⬡ Shazam.
+  const [recognizeModalOpen, setRecognizeModalOpen] = useState(false);
 
   // Extraction voix / instru (FLAC) à la demande — un seul job Demucs partagé
   // produit les 2 stems, peu importe lequel des 2 boutons l'a déclenché.
@@ -555,8 +560,11 @@ const Deck = forwardRef(function Deck({ side, label, colorKey, onLoaded, onAnaly
     }
   };
 
-  // Bouton "↺ Réessayer" en cas d'erreur — réutilise l'état courant.
-  const handleStartStems = () => startStemsFor(selectedVideo);
+  // Bouton "↺ Réessayer" en cas d'erreur — réutilise l'état courant. Pour un
+  // fichier uploadé, selectedVideo est null : on retombe sur analyzeResult
+  // (le "track" renvoyé par l'analyse, mêmes champs .id/.title, quelle que
+  // soit son origine YouTube ou upload) plutôt que de dupliquer un 2e chemin.
+  const handleStartStems = () => startStemsFor(selectedVideo || analyzeResult);
 
   // Analyse complète (BPM/clé/structure + 4 stems) pour le scoring de
   // compatibilité — vérifie d'abord le cache (/cached/:videoId) avant de
@@ -657,8 +665,49 @@ const Deck = forwardRef(function Deck({ side, label, colorKey, onLoaded, onAnaly
     }
   };
 
-  // Bouton "↺ Réessayer" en cas d'erreur — réutilise l'état courant.
-  const handleStartAnalyze = () => startAnalyzeFor(selectedVideo);
+  // ── Même chose que startAnalyzeFor, mais pour un fichier uploadé (mp3
+  // perso) plutôt qu'une vidéo YouTube — POST /api/analyze/upload au lieu de
+  // POST /api/analyze avec un videoId. Pas de raccourci "cache d'abord"
+  // séparé ici : contrairement à YouTube (id connu à l'avance), on ne peut
+  // savoir si ce fichier a déjà été analysé qu'après l'avoir envoyé au
+  // serveur (le hash de contenu qui sert de cache-key est calculé côté
+  // serveur) — /api/analyze/upload gère ce cache-hit lui-même et répond
+  // directement {cached:true, track} le cas échéant, exactement comme
+  // /api/analyze pour YouTube.
+  const startAnalyzeForUpload = async (f) => {
+    if (!f) return;
+    setAnalyzeStatus("running"); setAnalyzeError(null);
+    try {
+      const runAnalyzeJob = async () => {
+        const fd = new FormData();
+        fd.append("audio", f, f.name);
+        fd.append("title", f.name);
+        fd.append("stemMode", String(stemMode));
+        const res = await fetch("http://localhost:3001/api/analyze/upload", { method: "POST", body: fd });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Échec du lancement");
+        if (data.cached && data.track) {
+          setAnalyzeStatus("done"); setAnalyzeResult(data.track);
+          if (onAnalyzed) onAnalyzed(data.track);
+          startStemsFor(data.track);
+          return;
+        }
+        analyzePollingRef.current = false;
+        await pollAnalyze(data.jobId);
+      };
+      if (onAcquireAnalyzeLock) await onAcquireAnalyzeLock(runAnalyzeJob);
+      else await runAnalyzeJob();
+    } catch (e) {
+      setAnalyzeStatus("error"); setAnalyzeError(e.message);
+    }
+  };
+
+  // Bouton "↺ Réessayer" en cas d'erreur — réutilise l'état courant. Marche
+  // pour les 2 sources (vidéo YouTube sélectionnée OU fichier uploadé).
+  const handleStartAnalyze = () => {
+    if (selectedVideo) startAnalyzeFor(selectedVideo);
+    else if (file) startAnalyzeForUpload(file);
+  };
 
   const handleSelect = (video) => {
     generationRef.current++; // invalide tout polling d'analyse/stems en vol pour l'ancien morceau
@@ -709,9 +758,15 @@ const Deck = forwardRef(function Deck({ side, label, colorKey, onLoaded, onAnaly
       stemsPollingRef.current = false;
       setAnalyzeStatus("idle"); setAnalyzeResult(null); setAnalyzeError(null);
       analyzePollingRef.current = false;
+      setRecognizeResult(null); setRecognizeError(null); setRecognizeModalOpen(false);
       if (onAnalyzed) onAnalyzed(null);
       if (onStemsReady) onStemsReady(null);
       if (onLoaded) onLoaded({ type: "file", file: f });
+      // Auto : identification (vignette) + analyse BPM/clé/stems, comme pour
+      // un clip YouTube choisi dans la recherche (handleSelect) — l'utilisateur
+      // n'a plus besoin de cliquer sur ⬡ Shazam ni sur "Analyser" à la main.
+      recognizeFile(f, { silent: true });
+      startAnalyzeForUpload(f);
     }
   };
 
@@ -746,28 +801,35 @@ const Deck = forwardRef(function Deck({ side, label, colorKey, onLoaded, onAnaly
   };
 
   // ── Shazam / reconnaissance audio ──────────────────────────────
-  const handleRecognize = async () => {
-    setRecognizeResult(null);
-    setRecognizeError(null);
-
-    // Pour un fichier local : envoyer les 800 premiers Ko (≈10-20s MP3)
-    if (file) {
-      setRecognizing(true);
-      try {
-        const slice = file.slice(0, 800 * 1024);
-        const blob  = new Blob([slice], { type: file.type || "audio/mpeg" });
-        const fd = new FormData();
-        fd.append("audio", blob, file.name);
-        const res  = await fetch("http://localhost:3001/api/recognize", { method: "POST", body: fd });
-        const data = await res.json();
-        if (data.found) setRecognizeResult(data);
-        else setRecognizeError(data.message || "Chanson non reconnue");
-      } catch (e) {
-        setRecognizeError("Erreur réseau : " + e.message);
-      }
-      setRecognizing(false);
-      return;
+  // silent=true (upload automatique) : remplit recognizeResult/Error pour la
+  // vignette inline + le titre transmis à l'analyse, SANS ouvrir la fenêtre
+  // modale de détail (ça surprendrait l'utilisateur juste après avoir choisi
+  // un fichier). silent=false (clic manuel sur ⬡ Shazam) : ouvre la modale.
+  const recognizeFile = async (f, { silent = false } = {}) => {
+    if (!f) return;
+    if (!silent) { setRecognizeResult(null); setRecognizeError(null); setRecognizeModalOpen(true); }
+    setRecognizing(true);
+    try {
+      // Envoyer les 800 premiers Ko (≈10-20s MP3) suffit à l'identification
+      const slice = f.slice(0, 800 * 1024);
+      const blob  = new Blob([slice], { type: f.type || "audio/mpeg" });
+      const fd = new FormData();
+      fd.append("audio", blob, f.name);
+      const res  = await fetch("http://localhost:3001/api/recognize", { method: "POST", body: fd });
+      const data = await res.json();
+      if (data.found) setRecognizeResult(data);
+      else if (!silent) setRecognizeError(data.message || "Chanson non reconnue");
+      // Échec silencieux (auto, pas de match) : pas d'erreur affichée, juste
+      // pas de vignette — le fichier reste utilisable normalement.
+    } catch (e) {
+      if (!silent) setRecognizeError("Erreur réseau : " + e.message);
     }
+    setRecognizing(false);
+  };
+
+  const handleRecognize = () => {
+    // Pour un fichier local : identification audio (AudD).
+    if (file) { recognizeFile(file); return; }
 
     // Pour une vidéo YouTube : l'identité est déjà connue, afficher les infos
     if (selectedVideo) {
@@ -779,6 +841,7 @@ const Deck = forwardRef(function Deck({ side, label, colorKey, onLoaded, onAnaly
         artwork: selectedVideo.thumb,
         fromYT:  true,
       });
+      setRecognizeModalOpen(true);
     }
   };
   // ────────────────────────────────────────────────────────────────
@@ -811,7 +874,7 @@ const Deck = forwardRef(function Deck({ side, label, colorKey, onLoaded, onAnaly
     stemsPollingRef.current = false;
     setAnalyzeStatus("idle"); setAnalyzeResult(null); setAnalyzeError(null);
     analyzePollingRef.current = false;
-    setRecognizeResult(null); setRecognizeError(null);
+    setRecognizeResult(null); setRecognizeError(null); setRecognizeModalOpen(false);
     if (onAnalyzed) onAnalyzed(null);
     if (onStemsReady) onStemsReady(null);
     if (onLoaded) onLoaded(null);
@@ -961,6 +1024,36 @@ const Deck = forwardRef(function Deck({ side, label, colorKey, onLoaded, onAnaly
           )}
         </div>
 
+        {/* Vignette identification auto (fichier uploadé, reconnu en
+            silence à l'upload — cf. recognizeFile(f,{silent:true}) dans
+            handleFileChange) : carte compacte non-intrusive, contrairement
+            à la fenêtre modale du clic manuel sur ⬡ Shazam. Disparaît
+            d'elle-même si le fichier n'a pas été reconnu (recognizeResult
+            reste null dans ce cas). */}
+        {file && !selectedVideo && recognizeResult?.found && (
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 6, marginBottom: 2,
+            padding: "6px 8px", borderRadius: 8, background: "rgba(255,255,255,0.03)",
+            border: `1px solid ${accentColor}22` }}>
+            {recognizeResult.artwork && (
+              <img src={recognizeResult.artwork} alt="" style={{ width: 32, height: 32, borderRadius: 5,
+                objectFit: "cover", flexShrink: 0, border: `1px solid ${accentColor}33` }} />
+            )}
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "white", whiteSpace: "nowrap",
+                overflow: "hidden", textOverflow: "ellipsis" }}>{recognizeResult.title}</div>
+              <div style={{ fontSize: 10.5, color: accentColor, whiteSpace: "nowrap",
+                overflow: "hidden", textOverflow: "ellipsis" }}>{recognizeResult.artist}</div>
+            </div>
+            <button type="button" onClick={() => setRecognizeModalOpen(true)}
+              title="Voir le détail (paroles, prompt Suno, liens streaming)"
+              style={{ flexShrink: 0, fontSize: 10, fontWeight: 700, padding: "3px 7px", borderRadius: 5,
+                background: `${accentColor}1a`, color: accentColor, border: `1px solid ${accentColor}44`,
+                cursor: "pointer", letterSpacing: 0.5 }}>
+              ⓘ
+            </button>
+          </div>
+        )}
+
         {/* Video / Visualizer + Vol */}
         <div className="deck-content-row">
           <div className="deck-main">
@@ -1028,7 +1121,7 @@ const Deck = forwardRef(function Deck({ side, label, colorKey, onLoaded, onAnaly
         {/* ── Cadre Outils : Lyrics / Prompt Suno / Shazam + analyse ──
             Regroupés ici juste sous la barre de lecture. */}
         <div className="deck-tools-frame">
-          <div className="deck-footer" style={{ marginBottom: selectedVideo ? 8 : 0 }}>
+          <div className="deck-footer" style={{ marginBottom: (selectedVideo || file) ? 8 : 0 }}>
             <button className="ghost-btn"
               onClick={() => lyricsTarget && setShowLyrics(true)}
               disabled={!lyricsTarget}>
@@ -1062,7 +1155,7 @@ const Deck = forwardRef(function Deck({ side, label, colorKey, onLoaded, onAnaly
               suivant) au lieu d'occuper sa propre ligne pleine largeur — ça
               économise une rangée entière de hauteur dans le deck après une
               analyse, justement la cause du scroll de page en trop. */}
-          {selectedVideo && analyzeStatus !== "done" && (
+          {(selectedVideo || file) && analyzeStatus !== "done" && (
             <button type="button"
               disabled={analyzeStatus === "running"}
               onClick={handleStartAnalyze}
@@ -1083,7 +1176,7 @@ const Deck = forwardRef(function Deck({ side, label, colorKey, onLoaded, onAnaly
               stem devient disponible en même temps. Le badge BPM/clé (une fois
               l'analyse terminée) rejoint cette même ligne, à gauche des 2
               boutons FLAC, au lieu d'une ligne séparée. */}
-          {selectedVideo && (
+          {(selectedVideo || file) && (
             <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
               {analyzeStatus === "done" && (
                 <button type="button" onClick={handleStartAnalyze}
@@ -1151,10 +1244,10 @@ const Deck = forwardRef(function Deck({ side, label, colorKey, onLoaded, onAnaly
             fenêtres flottantes fermables, pas inline dans le Deck) — même
             overlay plein écran que LyricsModal/PromptSunoModal, fermable via
             ✕ ou clic à l'extérieur. */}
-        {(recognizeResult || recognizeError) && (
+        {recognizeModalOpen && (recognizeResult || recognizeError) && (
           <div
             style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.88)", backdropFilter: "blur(8px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}
-            onClick={() => { setRecognizeResult(null); setRecognizeError(null); }}
+            onClick={() => setRecognizeModalOpen(false)}
           >
           <div
             onClick={e => e.stopPropagation()}
@@ -1168,7 +1261,7 @@ const Deck = forwardRef(function Deck({ side, label, colorKey, onLoaded, onAnaly
               boxShadow: "0 20px 60px rgba(0,0,0,0.8)",
               animation: "fadeIn 0.2s ease",
             }}>
-            <button onClick={() => { setRecognizeResult(null); setRecognizeError(null); }} style={{
+            <button onClick={() => setRecognizeModalOpen(false)} style={{
               position: "absolute", top: 10, right: 12,
               background: "transparent", border: "1px solid #333", color: "#555", borderRadius: 6,
               width: 28, height: 28, cursor: "pointer", fontSize: 15, lineHeight: 1,
