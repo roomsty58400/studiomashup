@@ -1,5 +1,6 @@
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect, useCallback, forwardRef, useImperativeHandle } from "react";
 import Footer from "../components/Footer.jsx";
+import MacheupDjLibrary from "../components/MacheupDjLibrary.jsx";
 
 const API = "http://localhost:3001";
 
@@ -378,8 +379,10 @@ function StemPad({ def, active, settings, onChange, hasSolo }) {
   );
 }
 
-// ── Panneau d'un deck complet ──
-function DeckPanel({ side, label, accentColor, audioCtxRef, crossfaderInputRef, ensureAudio, tick }) {
+// ── Panneau d'un deck complet ── forwardRef : expose loadFile(file) pour
+// que le parent (bouton →A/→B de la bibliothèque) puisse charger un fichier
+// directement, sans passer par le <input type=file> caché de ce deck.
+const DeckPanel = forwardRef(function DeckPanel({ side, label, accentColor, audioCtxRef, crossfaderInputRef, ensureAudio, tick }, ref) {
   const engineRef = useRef(null);
   const rotationRef = useRef(0);
 
@@ -432,8 +435,12 @@ function DeckPanel({ side, label, accentColor, audioCtxRef, crossfaderInputRef, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tick]);
 
-  const handleFileChange = async (e) => {
-    const f = e.target.files[0];
+  // Cœur du chargement d'un fichier dans ce deck — extrait de l'ancien
+  // handleFileChange pour être appelable depuis 2 sources : le <input
+  // type=file> caché de ce deck, OU le bouton →A/→B de la bibliothèque
+  // (cf. useImperativeHandle plus bas), qui fournit directement un objet
+  // File obtenu via FileSystemFileHandle.getFile() sans passer par un input.
+  const loadFile = async (f) => {
     if (!f) return;
     ensureAudio?.();
     const eng = getEngine();
@@ -477,6 +484,10 @@ function DeckPanel({ side, label, accentColor, audioCtxRef, crossfaderInputRef, 
       setStemsError(err.message);
     }
   };
+
+  const handleFileChange = (e) => loadFile(e.target.files[0]);
+
+  useImperativeHandle(ref, () => ({ loadFile }));
 
   const pollStems = (jobId) => {
     const tickPoll = async () => {
@@ -654,7 +665,7 @@ function DeckPanel({ side, label, accentColor, audioCtxRef, crossfaderInputRef, 
       </div>
     </div>
   );
-}
+});
 
 export default function MacheupDJ() {
   const audioCtxRef = useRef(null);
@@ -667,6 +678,9 @@ export default function MacheupDJ() {
   const [masterVol, setMasterVol] = useState(80);
   const [masterLevel, setMasterLevel] = useState(0);
   const [tick, setTick] = useState(0);
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const deckARef = useRef(null);
+  const deckBRef = useRef(null);
 
   // Construction du graphe partagé (crossfader + master) — une seule fois,
   // au premier geste utilisateur (AudioContext ne démarre pas tout seul dans
@@ -695,6 +709,14 @@ export default function MacheupDJ() {
     masterAnalyserRef.current = analyser;
     setReady(true);
   }, [masterVol]);
+
+  // Bouton →A/→B de la bibliothèque : charge le fichier choisi directement
+  // dans le deck ciblé, sans passer par son <input type=file> caché.
+  const handleLoadToDeck = useCallback((file, side) => {
+    ensureAudio();
+    const targetRef = side === "A" ? deckARef : deckBRef;
+    targetRef.current?.loadFile(file);
+  }, [ensureAudio]);
 
   useEffect(() => {
     const onFirstGesture = () => { ensureAudio(); };
@@ -753,10 +775,21 @@ export default function MacheupDJ() {
               ⚠ Clique n'importe où sur la page pour activer l'audio (règle du navigateur).
             </div>
           )}
+          <button type="button" onClick={() => setLibraryOpen(v => !v)}
+            style={{ marginTop: 12, fontSize: 11, fontWeight: 700, padding: "6px 14px", borderRadius: 7,
+              border: `1px solid ${libraryOpen ? "var(--cyan)" : "var(--border)"}`,
+              background: libraryOpen ? "rgba(0,234,255,0.1)" : "rgba(255,255,255,0.03)",
+              color: libraryOpen ? "var(--cyan)" : "var(--muted2)", cursor: "pointer", letterSpacing: 1 }}>
+            📁 BIBLIOTHÈQUE {libraryOpen ? "▴" : "▾"}
+          </button>
         </div>
 
+        {libraryOpen && (
+          <MacheupDjLibrary onLoadToDeck={handleLoadToDeck} onClose={() => setLibraryOpen(false)} />
+        )}
+
         <div style={{ display: "grid", gridTemplateColumns: "1fr 260px 1fr", gap: 16, alignItems: "start" }}>
-          <DeckPanel side="A" label="A" accentColor="#00eaff" audioCtxRef={audioCtxRef} crossfaderInputRef={deckAGainRef} ensureAudio={ensureAudio} tick={tick} />
+          <DeckPanel ref={deckARef} side="A" label="A" accentColor="#00eaff" audioCtxRef={audioCtxRef} crossfaderInputRef={deckAGainRef} ensureAudio={ensureAudio} tick={tick} />
 
           {/* Section MASTER centrale */}
           <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 14, padding: 18,
@@ -784,7 +817,7 @@ export default function MacheupDJ() {
             </div>
           </div>
 
-          <DeckPanel side="B" label="B" accentColor="#cc00ff" audioCtxRef={audioCtxRef} crossfaderInputRef={deckBGainRef} ensureAudio={ensureAudio} tick={tick} />
+          <DeckPanel ref={deckBRef} side="B" label="B" accentColor="#cc00ff" audioCtxRef={audioCtxRef} crossfaderInputRef={deckBGainRef} ensureAudio={ensureAudio} tick={tick} />
         </div>
       </div>
 
