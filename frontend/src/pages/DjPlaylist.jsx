@@ -55,6 +55,24 @@ export default function DjPlaylist({ onSendToMacheupDJ }) {
   const [libAnalyzeProgress, setLibAnalyzeProgress] = useState(null); // { done, total, analyzed, cached, errors }
   const libAnalyzeCancelRef = useRef(false);
 
+  // Reprise automatique (31/07, retour utilisateur "automatiser pour gagner
+  // du temps") : sur une bibliothèque de plusieurs milliers de morceaux,
+  // l'analyse peut prendre longtemps et être interrompue (fermeture du
+  // navigateur, redémarrage du PC). Plutôt que d'obliger à revenir cliquer
+  // "Analyser toute la bibliothèque" à chaque fois, cette option (mémorisée
+  // dans localStorage, désactivée par défaut) relance automatiquement le
+  // scan puis l'analyse dès l'ouverture de la page si un dossier bibliothèque
+  // est déjà autorisé — grâce au cache par morceau, les titres déjà analysés
+  // sont sautés instantanément, donc "reprendre" ne recommence jamais à zéro.
+  const [autoResume, setAutoResume] = useState(() => {
+    try { return localStorage.getItem("djplaylist_autoResume") === "1"; } catch { return false; }
+  });
+  const toggleAutoResume = (v) => {
+    setAutoResume(v);
+    try { localStorage.setItem("djplaylist_autoResume", v ? "1" : "0"); } catch {}
+  };
+  const autoResumeTriggeredRef = useRef(false);
+
   // ── Playlists de référence importées/ajoutées (regroupées par lot) ──
   const [batches, setBatches] = useState([]); // [{ id, theme, style, tracks:[{title,artist,duration}] }]
   const [importing, setImporting] = useState(false);
@@ -250,10 +268,19 @@ export default function DjPlaylist({ onSendToMacheupDJ }) {
     const cached = await getCachedAnalysis(entry.relPath, file).catch(() => null);
     if (cached) return { analysis: cached, fromCache: true };
 
+    // stemMode "none" (31/07, retour utilisateur "automatiser pour gagner du
+    // temps") : DJPLAYLIST n'a besoin que du BPM/énergie pour le pacing, pas
+    // des fichiers de stems séparés (Demucs) — l'étape de loin la plus lente
+    // du pipeline. En sautant la séparation ici, l'analyse en lot de toute
+    // la bibliothèque devient nettement plus rapide. Les stems restent
+    // générés à la demande, plus tard, uniquement pour les morceaux
+    // réellement chargés dans un deck MACHEUPDJ (Stems 2.0) — le cache
+    // détecte le changement de mode et relance Demucs normalement à ce
+    // moment-là, sans double travail.
     const fd = new FormData();
     fd.append("audio", file, entry.name);
     fd.append("title", entry.tags?.title || entry.name);
-    fd.append("stemMode", "4");
+    fd.append("stemMode", "none");
     const res = await fetch(`${API}/api/analyze/upload`, { method: "POST", body: fd });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Échec du lancement");
@@ -305,6 +332,32 @@ export default function DjPlaylist({ onSendToMacheupDJ }) {
     }
     setLibAnalyzing(false);
   };
+
+  // Déclenche scan + analyse automatiquement à l'ouverture de la page si
+  // l'option "reprise automatique" est activée ET qu'un dossier bibliothèque
+  // est déjà autorisé — évite d'avoir à revenir cliquer manuellement après
+  // une interruption (fermeture du navigateur/PC en plein milieu). Le
+  // useRef empêche un redéclenchement à chaque re-render (permission/
+  // libraryEntries changent plusieurs fois pendant le cycle de vie normal).
+  useEffect(() => {
+    if (!autoResume || autoResumeTriggeredRef.current) return;
+    if (permission !== "granted" || !rootHandle) return;
+    autoResumeTriggeredRef.current = true;
+    (async () => {
+      await scanLibrary();
+    })();
+    // scanLibrary met à jour libraryEntries ; l'analyse est déclenchée par
+    // l'effet suivant une fois libraryEntries rempli, pas ici directement
+    // (scanLibrary() ne retourne pas la liste, elle passe par setState).
+  }, [autoResume, permission, rootHandle]);
+
+  const autoAnalyzeTriggeredRef = useRef(false);
+  useEffect(() => {
+    if (!autoResume || autoAnalyzeTriggeredRef.current) return;
+    if (scanning || libraryEntries.length === 0) return;
+    autoAnalyzeTriggeredRef.current = true;
+    runLibraryAnalysis();
+  }, [autoResume, scanning, libraryEntries]);
 
   // ── Génération : analyse à la demande (séquentielle — jamais 2 Demucs en
   // parallèle, cf. même contrainte que MACHEUP/MACHEUPDJ) puis pacing. ──────
@@ -492,6 +545,11 @@ export default function DjPlaylist({ onSendToMacheupDJ }) {
                     </BtnPrimary>
                   )
                 )}
+                <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10.5, color: "var(--muted2)", cursor: "pointer" }}
+                  title="Relance automatiquement le scan puis l'analyse à l'ouverture de cette page (utile pour reprendre après une interruption sans avoir à re-cliquer) — grâce au cache, ça ne recommence jamais à zéro.">
+                  <input type="checkbox" checked={autoResume} onChange={e => toggleAutoResume(e.target.checked)} />
+                  Reprise automatique à l'ouverture
+                </label>
               </div>
               {scanStats && (
                 <div style={{ fontSize: 10.5, color: "#555", marginTop: 6 }}>
@@ -500,6 +558,12 @@ export default function DjPlaylist({ onSendToMacheupDJ }) {
                   {scanStats.unreadable > 0 && ` · ${scanStats.unreadable} illisibles (ex : fichiers cloud pas téléchargés localement)`}
                   {scanStats.foldersUnreadable > 0 && ` · ${scanStats.foldersUnreadable} dossier(s) inaccessible(s)`}
                   {" — si le compte ne correspond toujours pas à ce que montre l'Explorateur Windows, dis-moi le nombre exact affiché ici, ça aide à trouver quel format manque."}
+                </div>
+              )}
+              {libraryEntries.length > 0 && (
+                <div style={{ fontSize: 10, color: "#555", marginTop: 6 }}>
+                  ℹ Analyse légère (BPM/énergie uniquement, sans séparation de voix/instru) — bien plus rapide sur une grosse bibliothèque.
+                  Les stems complets ne sont générés qu'au moment où un morceau est réellement chargé dans un deck MACHEUPDJ.
                 </div>
               )}
               {libAnalyzeProgress && (

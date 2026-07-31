@@ -25,7 +25,16 @@ import { registerJobCleanup } from "../services/jobCleanup.js";
 // services/demucs.js. Les colonnes guitar_path/piano_path restent dans le
 // schéma SQLite (db/index.js) pour ne pas casser d'anciennes lignes déjà en
 // cache, mais ne sont plus jamais écrites ni lues.
+// "none" (31/07, batch DJPLAYLIST) : mode SANS séparation Demucs — donne
+// juste BPM/clé/énergie (services/analyzer.js), sans les fichiers de stems.
+// Utilisé quand seule la métadonnée compte (playlist/pacing), pas la lecture
+// par piste isolée — évite de payer l'étape la plus lente (Demucs, plusieurs
+// dizaines de secondes par morceau) sur une bibliothèque entière alors que
+// rien ne va jamais lire ces stems. Un morceau analysé en "none" peut être
+// re-séparé en 2/4 stems plus tard, à la demande (le cache détecte le
+// changement de mode et relance Demucs normalement, cf. modeMatches ci-dessous).
 const STEM_COLUMNS_BY_MODE = {
+  none: [],
   2: [["vocals", "vocals_path"], ["instrumental", "instrumental_path"]],
   4: STEM_MODE_NAMES[4].map(n => [n, `${n}_path`]),
 };
@@ -35,7 +44,10 @@ const STEM_COLUMNS_BY_MODE = {
 // avec le nouveau stem_mode enregistré).
 const ALL_STEM_COLUMNS = ["vocals_path", "instrumental_path", "drums_path", "bass_path", "guitar_path", "piano_path", "other_path"];
 
-const normalizeStemMode = (m) => ([2, 4].includes(Number(m)) ? Number(m) : 4);
+const normalizeStemMode = (m) => {
+  if (m === "none" || m === 0 || m === "0") return "none";
+  return [2, 4].includes(Number(m)) ? Number(m) : 4;
+};
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const router = express.Router();
@@ -256,11 +268,14 @@ router.post("/", async (req, res) => {
       // STEM_COLUMNS_BY_MODE pour rester cohérents avec le cache-check
       // plus haut, quel que soit le mode choisi (2/4/6).
       const stemNames = stemColumns.map(([key]) => key);
-      let stemFileNames; // { [stemName]: "vocals.flac", ... } — noms de fichiers finaux dans jobOut
-      if (stemsUsable) {
+      let stemFileNames = {}; // { [stemName]: "vocals.flac", ... } — noms de fichiers finaux dans jobOut
+      if (stemNames.length === 0) {
+        // Mode "none" : aucune séparation à faire, l'analyse BPM/clé/énergie
+        // ci-dessus suffit — cf. commentaire sur STEM_COLUMNS_BY_MODE.none.
+        console.log(`[analyze] ${videoId} : mode "none" — Demucs non lancé (BPM/clé/énergie seulement)`);
+      } else if (stemsUsable) {
         console.log(`[analyze] ${videoId} : stems (${stemMode} pistes) déjà valides sur le disque — Demucs non relancé (seule l'analyse BPM/clé a été refaite)`);
         updateJob(jobId, { step: "separate" });
-        stemFileNames = {};
         for (const name of stemNames) stemFileNames[name] = `${name}${extname(cachedStemPaths[name])}`;
         // Les fichiers sont déjà au bon endroit (jobOut === le dossier où ils
         // ont été écrits la première fois) : rien à copier.
@@ -271,7 +286,6 @@ router.post("/", async (req, res) => {
           ? await separateStems(wav, stemsTmp)
           : await separateStemsFull(wav, stemsTmp, stemMode);
 
-        stemFileNames = {};
         for (const name of stemNames) stemFileNames[name] = `${name}${extname(separated[name])}`;
         // rename() plutôt que copyFile() : stemsTmp est un dossier jetable
         // (supprimé dans le "finally" plus bas), les stems n'y sont plus
@@ -423,17 +437,24 @@ router.post("/upload", uploadMulter.single("audio"), async (req, res) => {
         }
 
         const stemNames = stemColumns.map(([key]) => key);
-        updateJob(jobId, { step: "separate" });
-        const stemsTmp = join(jobTmp, "stems");
-        const separated = stemMode === 2
-          ? await separateStems(wav, stemsTmp)
-          : await separateStemsFull(wav, stemsTmp, stemMode);
-
         const stemFileNames = {};
-        for (const name of stemNames) stemFileNames[name] = `${name}${extname(separated[name])}`;
-        await Promise.all(
-          stemNames.map(name => rename(separated[name], join(jobOut, stemFileNames[name])))
-        );
+        if (stemNames.length > 0) {
+          // Mode "none" (stemNames vide) : aucune séparation Demucs à faire,
+          // l'analyse BPM/clé/énergie ci-dessus suffit — cf. commentaire sur
+          // STEM_COLUMNS_BY_MODE.none. Utilisé par l'analyse en lot DJPLAYLIST
+          // pour ne payer le coût Demucs QUE pour les morceaux réellement
+          // chargés dans un deck plus tard, pas toute la bibliothèque.
+          updateJob(jobId, { step: "separate" });
+          const stemsTmp = join(jobTmp, "stems");
+          const separated = stemMode === 2
+            ? await separateStems(wav, stemsTmp)
+            : await separateStemsFull(wav, stemsTmp, stemMode);
+
+          for (const name of stemNames) stemFileNames[name] = `${name}${extname(separated[name])}`;
+          await Promise.all(
+            stemNames.map(name => rename(separated[name], join(jobOut, stemFileNames[name])))
+          );
+        }
 
         const stemPathFields = {};
         for (const col of ALL_STEM_COLUMNS) stemPathFields[col] = null;
