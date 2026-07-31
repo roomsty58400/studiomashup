@@ -31,6 +31,7 @@ import diagRoutes from "./routes/diag.js";
 import ravedjAutoRoutes from "./routes/ravedjAuto.js";
 import mediaProxyRoutes from "./routes/mediaProxy.js";
 import mashupsHistoryRoutes from "./routes/mashups.js";
+import macheupdjRoutes from "./routes/macheupdj.js";
 import { cleanupMediaFiles } from "./services/cleanup.js";
 import { shutdownAllWorkers } from "./services/workerPool.js";
 
@@ -61,7 +62,7 @@ if (!process.env.SESSION_SECRET) {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Créer les dossiers nécessaires au démarrage
-["tmp", "tmp/a", "tmp/b", "tmp/mixed", "data/outputs", "data/outputs/clip-editor", "data/outputs/stems", "data/outputs/analyze"].forEach(d =>
+["tmp", "tmp/a", "tmp/b", "tmp/mixed", "data/outputs", "data/outputs/clip-editor", "data/outputs/stems", "data/outputs/analyze", "data/outputs/macheupdj"].forEach(d =>
   mkdirSync(join(__dirname, d), { recursive: true })
 );
 
@@ -195,6 +196,7 @@ app.use("/api/ext", extRoutes);
 app.use("/api/diag", diagRoutes);
 app.use("/api/ravedj-auto", ravedjAutoRoutes);
 app.use("/api/media-proxy", mediaProxyRoutes);
+app.use("/api/macheupdj", macheupdjRoutes);
 
 app.get("/api/health", (_, res) => res.json({ status: "ok" }));
 

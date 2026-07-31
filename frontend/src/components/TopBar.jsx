@@ -193,6 +193,13 @@ export default function TopBar({ activeView = "studio", onChangeView, onDemo }) 
             >
               🧩 DJMUP
             </button>
+            <button
+              className={`view-btn view-btn--dj ${activeView === "dj" ? "active" : ""}`}
+              onClick={() => onChangeView("dj")}
+              data-tooltip="Console 2 decks façon VirtualDJ (scratch, boucle, hot cues, stems) — fichiers uploadés uniquement"
+            >
+              🎧 MACHEUPDJ
+            </button>
           </div>
         )}
         <RadioPlayer />
