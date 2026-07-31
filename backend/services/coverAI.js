@@ -2,8 +2,22 @@ import dotenv from "dotenv";
 import { writeFile, mkdir } from "fs/promises";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import sharp from "sharp";
 import { bestArtistSong } from "../utils/videoTitle.js";
+
+// CORRECTIF (31/07, même cause que routes/pdfText.js) : "sharp" embarque un
+// binding natif compilé (libvips) — sur certaines machines/versions de Node
+// (constaté : Windows, Node v26.5.0, avec le paquet natif équivalent de
+// pdfjs-dist/@napi-rs/canvas), un binding natif sans binaire précompilé
+// disponible fait planter le module AU CHARGEMENT. Comme ce fichier est
+// importé (via routes/cover.js) tout en haut de server.js, un import
+// statique de "sharp" ferait planter TOUT le serveur au démarrage, même si
+// personne n'utilise jamais la génération de pochette IA. Import paresseux
+// (dynamique), déclenché uniquement dans generateCover() ci-dessous.
+let sharpModulePromise = null;
+function loadSharp() {
+  if (!sharpModulePromise) sharpModulePromise = import("sharp").then(m => m.default || m);
+  return sharpModulePromise;
+}
 
 dotenv.config();
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -154,6 +168,7 @@ export async function generateCover({ titleA, artistA, titleB, artistB, mashupTi
   }
 
   const overlay = buildOverlay(w, h, artistA, artistB, mashupTitle || artistA + " x " + artistB);
+  const sharp = await loadSharp();
   const final = await sharp(imgBuf).resize(w, h, {fit:"cover"}).composite([{input:overlay,top:0,left:0}]).png().toBuffer();
 
   await mkdir(COVERS_DIR, {recursive:true});
