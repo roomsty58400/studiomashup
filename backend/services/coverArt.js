@@ -23,29 +23,14 @@ function upscaleArtwork(url) {
   return url.replace(/\d+x\d+bb\.(jpg|png)$/i, "600x600bb.$1");
 }
 
-export const fetchAlbumArt = async (artist, song) => {
-  const query = `${artist || ""} ${song || ""}`.trim();
-  if (!query) return null;
-  const key = query.toLowerCase();
-
-  const cached = cache.get(key);
-  if (cached && Date.now() - cached.ts < CACHE_TTL_MS) return cached.url;
-
-  try {
-    const url = `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&media=music&entity=song&limit=1`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
-    if (!res.ok) throw new Error(`iTunes API ${res.status}`);
-    const data = await res.json();
-    const result = data.results?.[0];
-    const artUrl = upscaleArtwork(result?.artworkUrl100);
-    cache.set(key, { url: artUrl, ts: Date.now() });
-    return artUrl;
-  } catch (err) {
-    console.error(`⚠ [coverArt] échec recherche pochette pour "${query}" :`, err.message);
-    // On met aussi le résultat null en cache (courte durée implicite via la
-    // même TTL) pour éviter de re-frapper l'API en boucle sur un échec répété
-    // (ex: réseau coupé) tant que l'utilisateur reste sur la même page.
-    cache.set(key, { url: null, ts: Date.now() });
-    return null;
-  }
+// ⛔ DÉSACTIVÉ (02/08) : l'appel à l'API iTunes provoquait un flood de
+// requêtes (une par titre affiché) et se faisait bannir par Apple (403/429).
+// À la demande de l'utilisateur, tout contact réseau vers itunes.apple.com
+// est coupé ici — on retourne systématiquement null (pas de pochette), sans
+// jamais appeler fetch(). Le reste du pipeline (route, front) continue de
+// fonctionner à l'identique et retombe sur la miniature YouTube en repli.
+// Pour réactiver : restaurer le corps de fonction précédent (voir historique
+// git) et remettre un vrai throttle/backoff avant de ré-appeler iTunes.
+export const fetchAlbumArt = async (_artist, _song) => {
+  return null;
 };
