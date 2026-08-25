@@ -85,17 +85,35 @@ for raw_line in sys.stdin:
 
     job_id = req.get("id")
     try:
-        input_path = req["inputPath"]
+        input_path = os.path.abspath(req["inputPath"])
         output_dir = req["outputDir"]
         os.makedirs(output_dir, exist_ok=True)
-        # Mutation directe de l'attribut plutôt qu'un paramètre de separate() :
-        # la lib ne documente pas de façon de changer le dossier de sortie
-        # APRÈS construction autrement — à valider empiriquement (cf. en-tête
-        # de ce fichier) ; si ça échoue, l'exception est capturée ci-dessous
-        # et remontée comme un échec de CE job seulement, dereverb.js retombe
-        # alors sur le mode CLI pour cet appel.
-        separator.output_dir = output_dir
-        separator.separate(input_path)
+        # VALIDÉ EMPIRIQUEMENT (25/08) — l'incertitude notée en en-tête de ce
+        # fichier était fondée : la mutation directe "separator.output_dir =
+        # output_dir" ne suffit PAS à rediriger la sortie de separate(). En
+        # conditions réelles, les fichiers sont sortis dans le RÉPERTOIRE DE
+        # TRAVAIL du process (celui de "node server.js", donc backend/) au
+        # lieu de output_dir — 2 fichiers ".../backend/vocals_(No Reverb)_
+        # UVR-DeEcho-DeReverb.flac" et "...(Reverb)..." retrouvés à la racine
+        # de backend/ après un job réel. Conséquence concrète : pickCleanFile
+        # (dereverb.js) trouvait output_dir vide et faisait échouer TOUT
+        # dé-reverb passé par le worker persistant (repli sur le mode CLI
+        # jamais déclenché puisque le worker répondait "ok" avant même ce
+        # constat) — vocalsClean n'était donc jamais renseigné.
+        # Fix : forcer le RÉPERTOIRE DE TRAVAIL du process sur output_dir
+        # pendant l'appel — garantit que tout chemin relatif que la lib
+        # utilise en interne (quelle qu'en soit la raison exacte) atterrit au
+        # bon endroit, sans dépendre de la mutation d'attribut ci-dessus
+        # (conservée par précaution, sans certitude qu'elle serve à quoi que
+        # ce soit). input_path résolu en absolu AVANT le chdir (sinon cassé
+        # une fois le répertoire de travail changé).
+        prev_cwd = os.getcwd()
+        try:
+            os.chdir(output_dir)
+            separator.output_dir = output_dir
+            separator.separate(input_path)
+        finally:
+            os.chdir(prev_cwd)
         # On ne fait PAS confiance à la valeur de retour de separate() pour la
         # liste des fichiers produits (son format exact — noms relatifs ou
         # chemins complets — n'est pas garanti selon la version) : dereverb.js

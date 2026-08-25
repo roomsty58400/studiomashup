@@ -125,7 +125,12 @@ function DeckSourceCard({ letter, color, studioTrack, override, onOverrideChange
   const searchAbortRef = useRef(null);
   const debounceRef = useRef(null);
 
-  const track = override || studioTrack;
+  // override === false : Deck explicitement vidé via le bouton ↺ ci-dessous
+  // (distinct de null, qui laisse studioTrack reprendre la main) — permet de
+  // revenir à "aucun morceau chargé" même quand MacheUp Studio a bien un
+  // morceau sur ce Deck, pour repartir d'une recherche propre après une
+  // erreur de sélection.
+  const track = override === false ? null : (override || studioTrack);
 
   // Recherche effective (extraite pour être appelée à la fois par la
   // recherche "au fil de la frappe" ci-dessous et par Entrée/le bouton 🔍).
@@ -217,6 +222,14 @@ function DeckSourceCard({ letter, color, studioTrack, override, onOverrideChange
         }}>
           DECK {letter}
         </span>
+        {track && !editing && (
+          <button type="button" title="Effacer ce Deck (repartir d'une recherche vide)"
+            onClick={() => onOverrideChange(false)}
+            style={{ padding: "3px 9px", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer",
+              background: "transparent", border: "1px solid var(--border)", color: "var(--muted2)" }}>
+            ↺ Réinitialiser
+          </button>
+        )}
       </div>
 
       {track && !editing ? (
@@ -423,8 +436,13 @@ export default function Ext({ trackA = null, trackB = null, presetPair = null })
   // que le bouton AUTO sache quels morceaux utiliser.
   const [overrideA, setOverrideA] = useState(null);
   const [overrideB, setOverrideB] = useState(null);
-  const effectiveA = overrideA || trackA;
-  const effectiveB = overrideB || trackB;
+  // false = Deck explicitement vidé (bouton ↺ Réinitialiser de DeckSourceCard)
+  // — distinct de null, qui laisse trackA/trackB (MacheUp Studio) reprendre
+  // la main. Traité en "aucun morceau" ici aussi, pour que la pioche
+  // aléatoire/AUTO se désactivent bien tant qu'un nouveau morceau n'est pas
+  // choisi.
+  const effectiveA = overrideA === false ? null : (overrideA || trackA);
+  const effectiveB = overrideB === false ? null : (overrideB || trackB);
 
   // ── Pioche aléatoire (base de données) — copiée de Mashup Wheel (juillet
   // 2026, demande explicite : "copier la pioche aléatoire présente dans

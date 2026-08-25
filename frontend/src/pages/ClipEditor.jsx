@@ -188,7 +188,7 @@ function VideoSearch({ onSelect }) {
 }
 
 // ── Barre de progression de l'extraction (même esprit que MashupProgressModal) ──
-function ExtractProgress({ job }) {
+function ExtractProgress({ job, video }) {
   const isDone = job.status === "done";
   const isError = job.status === "error";
   const step = Math.min(job.step ?? 0, STEPS.length - 1);
@@ -232,6 +232,20 @@ function ExtractProgress({ job }) {
           );
         })}
       </div>
+
+      {isDone && job.fullAudio && (
+        // Export direct depuis ce cadre (demande explicite, 25/08) — évite de
+        // devoir aller chercher la carte "Piste complète" plus bas pour
+        // simplement récupérer le MP3 juste après l'extraction.
+        <button type="button"
+          onClick={() => triggerDownload(buildDownloadUrl(job.fullAudio,
+            `${sanitizeFilename(video?.title || job.title)} (pistecomplete).${extFromUrl(job.fullAudio, "mp3")}`))}
+          style={{ display: "block", width: "100%", textAlign: "center", marginTop: 10, padding: "8px 0",
+            borderRadius: 8, background: "rgba(0,234,255,0.06)", border: "1px solid rgba(0,234,255,0.2)",
+            color: "#00eaff", fontSize: 12, fontWeight: 800, cursor: "pointer" }}>
+          ⬇ Exporter le MP3
+        </button>
+      )}
 
       {isError && (
         <div style={{ marginTop: 10, padding: "8px 12px", background: "rgba(255,68,68,0.08)",
@@ -471,7 +485,7 @@ const GENRE_PRESETS = [
 ];
 
 
-function StemLane({ def, url, settings, onChange, hasSolo, level }) {
+function StemLane({ def, url, settings, onChange, hasSolo, level, onExportMp3, exportingMp3 }) {
   const effectivelyOff = settings.mute || (hasSolo && !settings.solo);
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px",
@@ -516,13 +530,30 @@ function StemLane({ def, url, settings, onChange, hasSolo, level }) {
           onChange={e => onChange({ pan: parseFloat(e.target.value) })}
           title={`Pan ${settings.pan.toFixed(2)}`} style={{ width: "100%" }} />
       </div>
+
+      <button type="button" disabled={!url || exportingMp3} onClick={onExportMp3}
+        title="Exporter ce stem en MP3"
+        style={{ width: 26, height: 26, borderRadius: 6, fontSize: 11, fontWeight: 800, flexShrink: 0,
+          cursor: url ? "pointer" : "default",
+          border: "1px solid var(--border)",
+          background: "rgba(255,255,255,0.03)",
+          color: exportingMp3 ? "var(--orange)" : "var(--muted2)" }}>
+        {exportingMp3 ? "…" : "⬇"}
+      </button>
     </div>
   );
 }
 
 function FadrMacheUpPanel({ job, jobId, video }) {
   const [settings, setSettings] = useState(() =>
-    Object.fromEntries(STEM_DEFS.map(d => [d.key, { volume: 1, pan: 0, mute: false, solo: false }])));
+    Object.fromEntries(STEM_DEFS.map(d => [d.key, {
+      volume: 1, pan: 0, mute: false, solo: false,
+      // "dereverb" (voix uniquement) : 1 = voix nettoyée à 100% (dé-réverb
+      // IA complet, comportement historique dès que vocalsClean est prêt),
+      // 0 = voix brute à 100% (réverb d'origine) — mélange continu entre les
+      // deux entre les deux, cf. curseur "Anti-réverb" sous la lane voix.
+      ...(d.key === "vocals" ? { dereverb: 1 } : {}),
+    }])));
   const [genre, setGenre] = useState(null);
   const [playing, setPlaying] = useState(false);
   const [levels, setLevels] = useState(() => Object.fromEntries(STEM_DEFS.map(d => [d.key, 0])));
@@ -540,6 +571,9 @@ function FadrMacheUpPanel({ job, jobId, video }) {
   const [genreGenerating, setGenreGenerating] = useState(false);
   const [genreResult, setGenreResult] = useState(null);
   const [genreError, setGenreError] = useState(null);
+  // Export MP3 individuel d'un stem (bouton ⬇ sur chaque ligne StemLane) —
+  // un seul à la fois (clé du stem en cours d'export, ou null).
+  const [exportingStemKey, setExportingStemKey] = useState(null);
 
   const audioRefs = useRef({});
   const audioCtxRef = useRef(null);
@@ -584,8 +618,27 @@ function FadrMacheUpPanel({ job, jobId, video }) {
         // déjà connecté — ignoré (cf. commentaire ci-dessus)
       }
     }
+
+    // Voix "brute" (avec réverb) en parallèle de la voix ci-dessus, UNIQUEMENT
+    // quand la version nettoyée existe (job.vocalsClean) — sinon "vocals"
+    // pointe déjà sur la brute, rien à ajouter. Pas de panner/analyser dédiés :
+    // ce gain se branche directement sur le panner de la lane voix (mélange
+    // avant panoramique/mesure), piloté par le curseur "Anti-réverb"
+    // (settings.vocals.dereverb) dans l'effet suivant.
+    const wetEl = audioRefs.current.vocalsWet;
+    if (wetEl && nodesRef.current.vocals && !nodesRef.current.vocalsWet) {
+      try {
+        const wetSource = ctx.createMediaElementSource(wetEl);
+        const wetGain = ctx.createGain();
+        wetSource.connect(wetGain);
+        wetGain.connect(nodesRef.current.vocals.panner);
+        nodesRef.current.vocalsWet = { gain: wetGain };
+      } catch {
+        // déjà connecté — ignoré (cf. commentaire ci-dessus)
+      }
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stemsReady, urls.vocals, urls.drums, urls.bass, urls.other]);
+  }, [stemsReady, urls.vocals, urls.drums, urls.bass, urls.other, job?.vocalsClean]);
 
   // Applique mute/solo/volume/pan en temps réel sur le graphe déjà construit.
   useEffect(() => {
@@ -594,8 +647,19 @@ function FadrMacheUpPanel({ job, jobId, video }) {
       const s = settings[d.key];
       if (!n || !s) continue;
       const effectivelyOff = s.mute || (hasSolo && !s.solo);
-      n.gain.gain.value = effectivelyOff ? 0 : s.volume;
+      // Voix : si la voix brute (vocalsWet) est chargée en parallèle, le gain
+      // "propre" est pondéré par le curseur Anti-réverb (dereverb) au lieu
+      // d'être toujours à 100% — cf. wetNode juste en dessous pour l'autre
+      // moitié du mélange.
+      const dryScale = d.key === "vocals" && nodesRef.current.vocalsWet ? (s.dereverb ?? 1) : 1;
+      n.gain.gain.value = effectivelyOff ? 0 : s.volume * dryScale;
       n.panner.pan.value = s.pan;
+    }
+    const wetNode = nodesRef.current.vocalsWet;
+    if (wetNode) {
+      const s = settings.vocals;
+      const effectivelyOff = s.mute || (hasSolo && !s.solo);
+      wetNode.gain.gain.value = effectivelyOff ? 0 : s.volume * (1 - (s.dereverb ?? 1));
     }
   }, [settings, hasSolo]);
 
@@ -622,9 +686,14 @@ function FadrMacheUpPanel({ job, jobId, video }) {
     return () => { alive = false; cancelAnimationFrame(rafRef.current); };
   }, [playing]);
 
+  // Éléments <audio> à garder synchronisés ensemble (play/pause/seek) — les 4
+  // stems + la voix brute en parallèle (vocalsWet) si le mélange anti-réverb
+  // est actif.
+  const allEls = () => [...STEM_DEFS.map(d => audioRefs.current[d.key]), audioRefs.current.vocalsWet].filter(Boolean);
+
   const togglePlay = () => {
     if (audioCtxRef.current?.state === "suspended") audioCtxRef.current.resume();
-    const els = STEM_DEFS.map(d => audioRefs.current[d.key]).filter(Boolean);
+    const els = allEls();
     if (playing) {
       els.forEach(el => el.pause());
       setPlaying(false);
@@ -637,7 +706,50 @@ function FadrMacheUpPanel({ job, jobId, video }) {
     }
   };
 
+  // Timeline au-dessus du bouton ▶ ÉCOUTER LE MIX — position/durée suivies
+  // sur la lane voix (référence arbitraire mais toujours présente dès que
+  // stemsReady, cf. STEM_DEFS), déplacer le curseur recale TOUS les stems
+  // (mêmes éléments que togglePlay) pour rester synchronisés.
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  useEffect(() => {
+    const el = audioRefs.current.vocals;
+    if (!el) return;
+    const onTime = () => setCurrentTime(el.currentTime);
+    const onMeta = () => setDuration(el.duration || 0);
+    el.addEventListener("timeupdate", onTime);
+    el.addEventListener("loadedmetadata", onMeta);
+    if (el.duration) setDuration(el.duration);
+    return () => {
+      el.removeEventListener("timeupdate", onTime);
+      el.removeEventListener("loadedmetadata", onMeta);
+    };
+  }, [stemsReady, urls.vocals]);
+
+  const formatTime = (s) => {
+    if (!isFinite(s) || s < 0) s = 0;
+    const m = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return `${m}:${String(sec).padStart(2, "0")}`;
+  };
+
+  const handleSeek = (t) => {
+    allEls().forEach(el => { el.currentTime = t; });
+    setCurrentTime(t);
+  };
+
   const updateSetting = (key, patch) => setSettings(s => ({ ...s, [key]: { ...s[key], ...patch } }));
+
+  // Export MP3 d'un stem individuel (bouton ⬇ sur chaque StemLane) —
+  // téléchargement forcé direct (le backend fixe Content-Disposition, cf.
+  // /:id/stem-mp3/:key), pas besoin de passer par buildDownloadUrl comme pour
+  // les URLs "/outputs/..." brutes.
+  const handleExportStemMp3 = (key) => {
+    if (exportingStemKey) return;
+    setExportingStemKey(key);
+    triggerDownload(`${API}/api/clip-editor/${jobId}/stem-mp3/${key}`);
+    setTimeout(() => setExportingStemKey(null), 1200);
+  };
 
   // Clic sur une pastille de genre : applique un VRAI effet audio ffmpeg
   // (EQ/compression/saturation/écho/pitch selon le genre — cf.
@@ -667,6 +779,9 @@ function FadrMacheUpPanel({ job, jobId, video }) {
     setGenreGenerating(false);
   };
 
+  // Téléchargement lancé directement dès que le mixdown est prêt (demande
+  // explicite, 25/08) — plus besoin de cliquer sur un 2e bouton "Mix prêt"
+  // après l'export : le clic sur "EXPORTER LE MIX" suffit à tout déclencher.
   const handleExport = async () => {
     setExporting(true); setExportError(null); setExportResult(null);
     try {
@@ -675,7 +790,10 @@ function FadrMacheUpPanel({ job, jobId, video }) {
         body: JSON.stringify({ stems: settings }),
       });
       const data = await res.json();
-      if (data.url) setExportResult(data); else setExportError(data.error || "Erreur inconnue");
+      if (data.url) {
+        triggerDownload(buildDownloadUrl(data.url, `${sanitizeFilename(video?.title)} (mix FadrMacheUp)`));
+        setExportResult(data);
+      } else setExportError(data.error || "Erreur inconnue");
     } catch (e) { setExportError("Erreur réseau : " + e.message); }
     setExporting(false);
   };
@@ -718,14 +836,47 @@ function FadrMacheUpPanel({ job, jobId, video }) {
                 <audio ref={el => { audioRefs.current[d.key] = el; }}
                   src={urls[d.key] ? `${API}${urls[d.key]}` : undefined}
                   preload="auto" crossOrigin="anonymous" style={{ display: "none" }} />
+                {/* Voix brute en parallèle, uniquement une fois le dé-réverb IA prêt
+                    (cf. graphe Web Audio ci-dessus) — alimente le curseur Anti-réverb. */}
+                {d.key === "vocals" && job?.vocalsClean && (
+                  <audio ref={el => { audioRefs.current.vocalsWet = el; }}
+                    src={job.vocals ? `${API}${job.vocals}` : undefined}
+                    preload="auto" crossOrigin="anonymous" style={{ display: "none" }} />
+                )}
                 <StemLane def={d} url={urls[d.key]} settings={settings[d.key]}
-                  onChange={patch => updateSetting(d.key, patch)} hasSolo={hasSolo} level={levels[d.key] || 0} />
+                  onChange={patch => updateSetting(d.key, patch)} hasSolo={hasSolo} level={levels[d.key] || 0}
+                  onExportMp3={() => handleExportStemMp3(d.key)} exportingMp3={exportingStemKey === d.key} />
+                {d.key === "vocals" && job?.vocalsClean && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 12px 2px 46px" }}>
+                    <span style={{ fontSize: 10, color: "var(--muted2)", whiteSpace: "nowrap" }}>💧 Anti-réverb</span>
+                    <input type="range" min="0" max="1" step="0.01" value={settings.vocals.dereverb ?? 1}
+                      onChange={e => updateSetting("vocals", { dereverb: parseFloat(e.target.value) })}
+                      title={`Anti-réverb ${Math.round((settings.vocals.dereverb ?? 1) * 100)}% (0% = voix d'origine, 100% = voix nettoyée par l'IA)`}
+                      style={{ flex: 1 }} />
+                    <span style={{ fontSize: 10, color: "var(--muted2)", width: 32, textAlign: "right" }}>
+                      {Math.round((settings.vocals.dereverb ?? 1) * 100)}%
+                    </span>
+                  </div>
+                )}
               </React.Fragment>
             ))}
           </div>
 
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 14 }}>
+            <span style={{ fontSize: 10, color: "var(--muted2)", width: 30, textAlign: "right", flexShrink: 0 }}>
+              {formatTime(currentTime)}
+            </span>
+            <input type="range" min="0" max={duration || 0} step="0.01"
+              value={Math.min(currentTime, duration || 0)} disabled={!duration}
+              onChange={e => handleSeek(parseFloat(e.target.value))}
+              title="Avancer/reculer dans le mix" style={{ flex: 1 }} />
+            <span style={{ fontSize: 10, color: "var(--muted2)", width: 30, flexShrink: 0 }}>
+              {formatTime(duration)}
+            </span>
+          </div>
+
           <button type="button" onClick={togglePlay}
-            style={{ marginTop: 12, width: "100%", padding: "9px 0", borderRadius: 8, border: "1px solid var(--orange)",
+            style={{ marginTop: 8, width: "100%", padding: "9px 0", borderRadius: 8, border: "1px solid var(--orange)",
               background: playing ? "var(--orange)" : "transparent", color: playing ? "#000" : "var(--orange)",
               fontWeight: 800, fontSize: 13, cursor: "pointer", letterSpacing: 1 }}>
             {playing ? "⏸ PAUSE" : "▶ ÉCOUTER LE MIX (aperçu temps réel)"}
@@ -763,8 +914,17 @@ function FadrMacheUpPanel({ job, jobId, video }) {
             {genreResult && (
               <div style={{ marginTop: 12, background: "var(--surface2)", border: "1px solid rgba(255,106,0,0.25)",
                 borderRadius: 10, padding: 14 }}>
-                <div style={{ fontSize: 12, fontWeight: 700, color: "var(--orange)", marginBottom: 8 }}>
-                  🎵 Mix — effet {genreResult.genre}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "var(--orange)" }}>
+                    🎵 Mix — effet {genreResult.genre}
+                  </div>
+                  <button type="button" title="Effacer ce résultat"
+                    onClick={() => { setGenreResult(null); setGenre(null); setGenreError(null); }}
+                    style={{ width: 22, height: 22, borderRadius: 6, fontSize: 12, flexShrink: 0,
+                      border: "1px solid var(--border)", background: "rgba(255,255,255,0.03)",
+                      color: "var(--muted2)", cursor: "pointer" }}>
+                    🗑
+                  </button>
                 </div>
                 <audio src={`${API}${genreResult.url}`} controls style={{ width: "100%" }} />
                 <button type="button"
@@ -794,13 +954,16 @@ function FadrMacheUpPanel({ job, jobId, video }) {
             </div>
           )}
           {exportResult && (
-            <button type="button"
-              onClick={() => triggerDownload(buildDownloadUrl(exportResult.url, `${sanitizeFilename(video?.title)} (mix FadrMacheUp)`))}
-              style={{ display: "block", width: "100%", textAlign: "center", marginTop: 10, padding: "9px 0", borderRadius: 8,
-                background: "rgba(255,106,0,0.12)", border: "1px solid var(--orange)", color: "var(--orange)",
-                fontSize: 12, fontWeight: 800, cursor: "pointer" }}>
-              ✅ Mix prêt — ⬇ Télécharger
-            </button>
+            // Le téléchargement est déjà parti tout seul (cf. handleExport) —
+            // simple confirmation + relance manuelle possible si jamais le
+            // navigateur a bloqué le téléchargement automatique.
+            <div style={{ marginTop: 10, textAlign: "center", fontSize: 12, color: "var(--muted2)" }}>
+              ✅ Mix téléchargé — {" "}
+              <span onClick={() => triggerDownload(buildDownloadUrl(exportResult.url, `${sanitizeFilename(video?.title)} (mix FadrMacheUp)`))}
+                style={{ color: "var(--orange)", fontWeight: 700, cursor: "pointer", textDecoration: "underline" }}>
+                relancer le téléchargement
+              </span>
+            </div>
           )}
 
           {promptError && (
@@ -1184,7 +1347,7 @@ export default function ClipEditor() {
               </div>
             )}
 
-            {job && <ExtractProgress job={job} />}
+            {job && <ExtractProgress job={job} video={selectedVideo} />}
 
             {/* Aperçu vidéo d'origine — téléchargée en tâche de fond, peut
                 arriver un peu après que l'audio soit prêt (étape ① "done") */}

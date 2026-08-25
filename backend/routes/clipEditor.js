@@ -64,6 +64,41 @@ router.get("/:id/video-silent", (req, res) => {
   res.download(filePath, `${safeTitle} (sanson).mp4`);
 });
 
+// ── Export MP3 d'un stem individuel (cadre FadrMacheUp) ── les stems sortent
+// de Demucs en FLAC (cf. runSeparation, "flac qui n'a pas besoin de
+// torchcodec") : pratique pour un mixage sans perte, mais un MP3 est souvent
+// préférable pour un export rapide à partager (poids, compatibilité
+// universelle). Réencodé à la demande puis mis en cache sur le disque du job
+// (le .mp3 n'est jamais régénéré une fois présent). Même principe de
+// téléchargement forcé que /:id/video-silent ci-dessus.
+const STEM_MP3_LABELS = { vocals: "voix", drums: "batterie", bass: "basse", other: "autres" };
+router.get("/:id/stem-mp3/:key", async (req, res) => {
+  const { id: jobId, key } = req.params;
+  const job = jobs.get(jobId);
+  if (!job) return res.status(404).json({ error: "Job not found" });
+  if (!STEM_MP3_LABELS[key]) return res.status(400).json({ error: "Stem inconnu." });
+
+  // Voix : on préfère la version nettoyée (sans écho/réverb) si prête, comme
+  // /remix-export et /genre-effect plus bas dans ce fichier — c'est la
+  // version que le cadre FadrMacheUp fait déjà écouter par défaut.
+  const sourceUrl = key === "vocals" ? (job.vocalsClean || job.vocals) : job[key];
+  if (!sourceUrl) return res.status(404).json({ error: "Stem indisponible." });
+
+  const jobOut = join(OUT_DIR, jobId);
+  const sourcePath = join(jobOut, sourceUrl.split("/").pop());
+  if (!existsSync(sourcePath)) return res.status(404).json({ error: "Fichier introuvable sur le serveur." });
+
+  const mp3Path = join(jobOut, `${key}.mp3`);
+  try {
+    if (!existsSync(mp3Path)) await exportMP3(sourcePath, mp3Path);
+    const safeTitle = (job.title || "clip").replace(/[\\/:*?"<>|]/g, "").trim().slice(0, 60) || "clip";
+    res.download(mp3Path, `${safeTitle} (${STEM_MP3_LABELS[key]}).mp3`);
+  } catch (err) {
+    console.error(`❌ [clip-editor] export MP3 stem "${key}" (${jobId}) échoué :`, err.message);
+    res.status(500).json({ error: `Export MP3 échoué : ${err.message}` });
+  }
+});
+
 // ── Séparation voix / instru (Demucs) ── factorisée pour être appelée à la
 // fois automatiquement (juste après l'extraction, en tâche de fond masquée)
 // et manuellement via /:id/separate (ex: pour réessayer après une erreur).

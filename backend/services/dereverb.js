@@ -109,7 +109,7 @@ const pickCleanFile = (outputDir, sourceLabel) => {
 // dont l'API Python — demucs.api.Separator — a été vérifiée directement sur
 // l'environnement réel de l'utilisateur avant d'être branchée) : l'API
 // Python de audio-separator utilisée ici (Separator/load_model/separate, cf.
-// services/workers/dereverb_worker.py) est fondée sur la documentation
+// backend/pyworkers/dereverb_worker.py) est fondée sur la documentation
 // publique du package, pas sur une vérification de la version RÉELLEMENT
 // installée dans le venv dédié C:\audio-separator-env — accès à ce code
 // uniquement, pas à cet environnement d'exécution précis. Le repli
@@ -122,7 +122,7 @@ const WORKER_ENABLED = process.env.DEREVERB_WORKER !== "0";
 let _dereverbWorker = null;
 const getDereverbWorker = () => {
   if (_dereverbWorker) return _dereverbWorker;
-  const scriptPath = join(__dirname, "workers", "dereverb_worker.py");
+  const scriptPath = join(__dirname, "..", "pyworkers", "dereverb_worker.py");
   _dereverbWorker = registerWorker(new PersistentWorker(PYTHON_BIN, [scriptPath], {
     name: "dereverb",
     readyTimeoutMs: 90000, // 1er chargement du modèle (~100 Mo) peut prendre du temps

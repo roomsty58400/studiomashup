@@ -25,7 +25,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Même bug que documenté et corrigé dans analyzer.js (resolvePythonCmd) :
 // "python" sur le PATH dépend de LA FENÊTRE qui a lancé "npm run dev", pas
 // d'une propriété globale de la machine. Constaté en pratique : le worker
-// Demucs persistant (services/workers/demucs_worker.py) échouait
+// Demucs persistant (backend/pyworkers/demucs_worker.py) échouait
 // SYSTÉMATIQUEMENT au démarrage avec "ModuleNotFoundError: No module named
 // 'demucs.api'", alors qu'un `pip show demucs` dans un terminal fraîchement
 // ouvert confirmait demucs 4.1.0 correctement installé AVEC demucs.api
@@ -85,7 +85,7 @@ const modelForFullMode = () => MODEL_4STEMS;
 // process Python neuf (import torch + rechargement du modèle depuis le
 // disque) à CHAQUE séparation, un unique process persistant garde le modèle
 // chargé en RAM/VRAM en permanence (cf. services/workerPool.js et
-// services/workers/demucs_worker.py).
+// backend/pyworkers/demucs_worker.py).
 //
 // RÉACTIVÉ PAR DÉFAUT (opt-out via DEMUCS_WORKER=0 dans backend/.env si
 // besoin) : ce worker avait été désactivé par précaution après un retour
@@ -114,7 +114,7 @@ const getDemucsWorker = async () => {
   if (_demucsWorker) return _demucsWorker;
   const pythonCmd = await resolveDemucsPython();
   const [bin, ...extraArgs] = pythonCmd.split(" ");
-  const scriptPath = join(__dirname, "workers", "demucs_worker.py");
+  const scriptPath = join(__dirname, "..", "pyworkers", "demucs_worker.py");
   _demucsWorker = registerWorker(new PersistentWorker(bin, [...extraArgs, scriptPath], {
     name: "demucs", readyTimeoutMs: 90000, // le 1er chargement du modèle peut prendre du temps
   }));

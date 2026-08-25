@@ -32,7 +32,7 @@ import { spawn } from "child_process";
 export class PersistentWorker {
   // "env" (optionnel) : variables d'environnement additionnelles à fusionner
   // avec process.env pour CE worker uniquement — ajouté pour l'analyseur
-  // BPM/clé (services/workers/analyzer_worker.py), qui a besoin de
+  // BPM/clé (backend/pyworkers/analyzer_worker.py), qui a besoin de
   // NUMBA_DISABLE_JIT=1 UNIQUEMENT quand la commande Python résolue est la
   // 3.14 "à problèmes" (cf. analyzer.js/resolvePythonCmd) — Demucs n'a
   // jamais eu besoin de ce réglage, d'où l'absence historique de cette

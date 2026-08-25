@@ -44,7 +44,7 @@ const resolvePythonCmd = createPythonResolver({
 // CHAQUE analyse (import librosa/numpy + compilation JIT numba à froid à
 // chaque fois — 1 à 3s payés en pure perte à chaque appel), un unique
 // process persistant garde librosa déjà chargé/chaud en mémoire (cf.
-// services/workers/analyzer_worker.py). RÉACTIVÉ PAR DÉFAUT (opt-out via
+// backend/pyworkers/analyzer_worker.py). RÉACTIVÉ PAR DÉFAUT (opt-out via
 // ANALYZER_WORKER=0 dans backend/.env si besoin) — tryWorkerAnalyze ne lève
 // JAMAIS : en cas d'indisponibilité (dépendance manquante, worker qui
 // plante), on retombe automatiquement sur l'ancien mode "un process par
@@ -55,7 +55,7 @@ const getAnalyzerWorker = async () => {
   if (_analyzerWorker) return _analyzerWorker;
   const pythonCmd = await resolvePythonCmd();
   const [bin, ...extraArgs] = pythonCmd.split(" ");
-  const scriptPath = join(__dirname, "workers", "analyzer_worker.py");
+  const scriptPath = join(__dirname, "..", "pyworkers", "analyzer_worker.py");
   // Même garde-fou numba que la commande "exec" ci-dessous (usingProblematicPython) —
   // décidé UNE FOIS ici, au démarrage du worker, puisque le process persistant
   // ne relance jamais l'interpréteur ensuite.
