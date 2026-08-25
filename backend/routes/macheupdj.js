@@ -3,7 +3,7 @@ import multer from "multer";
 import { v4 as uuidv4 } from "uuid";
 import { join, dirname, extname } from "path";
 import { fileURLToPath } from "url";
-import { existsSync, mkdirSync } from "fs";
+import { mkdirSync } from "fs";
 import { rename, rm } from "fs/promises";
 import { extractAudio } from "../services/ffmpeg.js";
 import { separateStemsFull } from "../services/demucs.js";

@@ -747,11 +747,6 @@ export default function ComboPanel({
     };
   }, []);
 
-  const handleLiveStemEnded = () => {
-    // Géré par la boucle de progression pour "global" ; pour un aperçu solo,
-    // LiveNode.onEnded (câblé plus bas au moment du play) coupe directement.
-  };
-
   // ── IA-DJA : suggère 3 combinaisons à comparer ──────────────────────────
   // Analyse la compatibilité RÉELLE des 2 morceaux (même moteur que le score
   // affiché dans Mixer.jsx et la roue MachWheel — services/scoring.js via

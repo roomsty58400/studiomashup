@@ -770,20 +770,6 @@ const Deck = forwardRef(function Deck({ side, label, colorKey, onLoaded, onAnaly
     }
   };
 
-  const togglePlay = () => {
-    if (selectedVideo && playerRef.current) {
-      playing ? playerRef.current.pauseVideo() : playerRef.current.playVideo();
-      return;
-    }
-    if (audioRef.current && file) {
-      // Resume AudioContext on first user gesture
-      if (audioCtxRef.current?.state === "suspended") audioCtxRef.current.resume();
-      if (playing) { audioRef.current.pause(); setPlaying(false); }
-      else         { audioRef.current.play();  setPlaying(true); }
-    }
-  };
-
-
   const handleSeek = (e) => {
     const val = parseFloat(e.target.value); setProgress(val);
     if (selectedVideo && playerRef.current) {

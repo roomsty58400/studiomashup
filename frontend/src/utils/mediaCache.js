@@ -69,13 +69,3 @@ export function prefetchMedia(title, channel) {
   fetchLyrics(title, channel).catch(() => {});
   fetchSunoPrompt(title, channel).catch(() => {});
 }
-
-// ── Préchargement de toute une liste de résultats de recherche ──
-// Lyrics (simple scraping) : préchargées pour tous les résultats affichés.
-// Prompt Suno (appel IA Gemini, plus coûteux) : limité aux premiers résultats
-// pour ne pas spammer l'API à chaque frappe clavier.
-export function prefetchSearchResults(results, { sunoLimit = 3 } = {}) {
-  if (!Array.isArray(results)) return;
-  results.forEach((r) => fetchLyrics(r.title, r.channel).catch(() => {}));
-  results.slice(0, sunoLimit).forEach((r) => fetchSunoPrompt(r.title, r.channel).catch(() => {}));
-}

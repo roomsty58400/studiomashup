@@ -27,8 +27,6 @@ const persist = () => {
   }
 };
 
-export const isBlocked = (videoId) => blocked.has(videoId);
-
 export const blockVideo = (videoId) => {
   if (!videoId || blocked.has(videoId)) return;
   blocked.add(videoId);

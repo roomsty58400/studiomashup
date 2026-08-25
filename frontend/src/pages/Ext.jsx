@@ -546,6 +546,11 @@ export default function Ext({ trackA = null, trackB = null, presetPair = null })
   // sinon, l'état ne serait pas encore à jour au moment de l'appel).
   const startAutoFor = async (a, b) => {
     if (!a?.id || !b?.id) return;
+    // Efface l'ancien rendu affiché avant de relancer un AUTO — sinon la
+    // vidéo précédente reste visible dans le DJMUP PLAYER pendant toute la
+    // durée de la nouvelle génération (jusqu'à 15 min), donnant l'impression
+    // à tort que le AUTO n'a rien fait ou qu'il est déjà terminé.
+    setRenderUrl("");
     setAutoStatus({ status: "running", step: 0, label: "Démarrage..." });
     try {
       const res = await fetch(`${API}/api/ravedj-auto`, {

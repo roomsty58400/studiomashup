@@ -574,11 +574,6 @@ export default function Mixer({ trackA, trackB, analysisA, analysisB, onCreateMa
 
   const handleResetAdvanced = () => { setManualPitch(null); setManualTempo(null); };
 
-  const handleCrossfade = (val) => {
-    setCrossfade(val);
-    if (onCrossfadeChange) onCrossfadeChange(val);
-  };
-
   return (
     <div className="mixer">
       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, position: "relative" }}>

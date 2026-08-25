@@ -1,6 +1,5 @@
 import express from "express";
 import multer from "multer";
-import { v4 as uuidv4 } from "uuid";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { unlinkSync, existsSync, readFileSync } from "fs";
